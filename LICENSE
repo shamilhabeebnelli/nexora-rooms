@@ -4,3 +4,9 @@ This repository is public so the work can be viewed. It is NOT open source:
 no permission is granted to copy, modify, merge, publish, distribute,
 sublicense, or reuse this code or any part of it without the copyright
 holder's explicit written permission. Copying is strictly prohibited.
+
+Scope: this notice applies only to the original work in this repository.
+It does not apply to, and claims no rights over, the third-party
+components listed in NOTICE.md (including Three.js and OpenStreetMap
+map data). Those remain the property of their respective owners and are
+available under their own licenses, which are preserved as required.
