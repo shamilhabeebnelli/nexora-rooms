@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>NELLIWERSE · multiplayer arena</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#6b4fd8">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="nelli-shell">
+<canvas id="denelli-arena" class="nelli-arena"></canvas>
+
+<!-- startup splash: original N mark, plays once then fades (never blocks input) -->
+<div id="nelli-splash" class="nelli-splash">
+  <svg class="nelli-bolt" viewBox="0 0 120 120" aria-hidden="true">
+    <path class="nl-boltpath" d="M63 4 L48 52 L60 52 L44 116 L82 44 L66 44 L78 4 Z"/>
+  </svg>
+  <div class="nelli-flash"></div>
+  <svg class="nelli-nlogo" viewBox="0 0 120 120" aria-hidden="true">
+    <defs>
+      <linearGradient id="nlgrad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#f0c36a"/><stop offset="1" stop-color="#a8894a"/>
+      </linearGradient>
+    </defs>
+    <polygon class="nl-hex" points="60,8 106,34 106,86 60,112 14,86 14,34"/>
+    <path class="nl-n" d="M42 84 V36 L78 84 V36"/>
+  </svg>
+  <p class="nelli-splash-sub">NELLIWERSE</p>
+</div>
+
+<!-- join overlay -->
+<div id="nelli-join" class="nelli-join">
+  <div class="nelli-card">
+    <h1 class="nelli-title nelli-title-nv">NELLIWERSE</h1>
+    <p class="nelli-sub">multiplayer arena</p>
+    <input id="nelli-name" class="nelli-name" maxlength="14" placeholder="your player name" autocomplete="off">
+    <input id="nelli-target" class="nelli-name" type="number" min="0" max="999" placeholder="kill target (optional)" autocomplete="off">
+    <button id="nelli-hostgo" class="nelli-play nelli-hostgo nelli-hidden">CREATE TEAM</button>
+    <p class="nelli-roomhint">create: you get a team code to share with friends</p>
+    <input id="nelli-room" class="nelli-name" type="text" maxlength="6" placeholder="team code" autocomplete="off">
+    <button id="nelli-play" class="nelli-play">JOIN TEAM</button>
+    <p class="nelli-roomhint">join: enter only the team code - no address needed</p>
+    <button id="nelli-sound" class="nelli-soundbtn">sound: on</button>
+    <p id="nelli-join-err" class="nelli-join-err"></p>
+  </div>
+</div>
+
+<!-- HUD -->
+<div id="nelli-hud" class="nelli-hud nelli-hidden">
+  <div class="nelli-hpbar"><div id="nelli-hpfill" class="nelli-hpfill"></div><span id="nelli-hptext" class="nelli-hptext"></span></div>
+  <div class="nelli-stats">
+    <span id="nelli-kills">0 kills</span>
+    <span id="nelli-party">1 online</span>
+    <span id="nelli-place"></span>
+  </div>
+</div>
+<div id="nelli-feed" class="nelli-feed"></div>
+
+<!-- death overlay -->
+<div id="nelli-death" class="nelli-death nelli-hidden">
+  <div class="nelli-card">
+    <h1 class="nelli-title nelli-dead-title">YOU DIED</h1>
+    <p id="nelli-death-stats" class="nelli-sub"></p>
+    <p class="nelli-sub">rebirth: you wake at the nearest town police station</p>
+    <button id="nelli-respawn" class="nelli-play">RESPAWN</button>
+  </div>
+</div>
+
+<!-- touch controls -->
+<div id="nelli-stick" class="nelli-stick nelli-hidden"><div id="nelli-knob" class="nelli-knob"></div></div>
+<button id="nelli-atk" class="nelli-atk nelli-hidden">&#9876;</button>
+<button id="nelli-shoot" class="nelli-atk nelli-shoot nelli-hidden">&#8982;</button>
+
+<button id="nelli-sound-hud" class="nelli-soundbtn nelli-sound-hud nelli-hidden">sound: on</button>
+<div class="nelli-foot">nelliwerse &middot; &copy; shamil habeeb nelli &middot; copying strictly prohibited</div>
+<div id="nelli-crosshair" class="nelli-hidden"></div>
+<script src="sfx.js"></script>
+<script src="kondotty-map.js"></script>
+<script src="core.js"></script>
+<script src="fps3d.js"></script>
+<script src="client.js"></script>
+</body>
+</html>
