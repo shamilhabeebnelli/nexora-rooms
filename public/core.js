@@ -432,28 +432,6 @@
       this.events.push({ k: 'rebirth', id: p.id, name: p.name, town: st ? st.town : null });
     }
 
-    attack(id) {
-      const p = this.players.get(id);
-      if (!p || p.hp <= 0 || p.cd > 0) return false;
-      p.cd = 4;
-      p.swings = (p.swings || 0) + 1; // melee swings - melee only, no shooting in the game yet
-      const dirs = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-      const f = p.face;
-      const order = [f, ...dirs.filter(d => !(d[0] === f[0] && d[1] === f[1]))];
-      for (const [dx, dy] of order) {
-        const m = this.mobAt(p.x + dx, p.y + dy);
-        if (m) {
-          p.hits = (p.hits || 0) + 1;
-          m.hp -= p.dmg;
-          this.events.push({ k: 'slash', id: p.id });
-          if (m.hp <= 0) this.killMob(p, m);
-          return true;
-        }
-      }
-      this.events.push({ k: 'slash', id: p.id });
-      return true;
-    }
-
     killMob(p, m) {
       this.mobs.delete(m.id);
       p.kills += 1; p.gold += 5;
@@ -465,9 +443,8 @@
     }
 
     /* real gunfire: a bullet leaves in the facing direction and flies until
-       it hits a monster, a wall, or its max range. Bullets pass through
-       players - the PvP/co-op target choice is still his open question,
-       so friendly fire stays OFF until he settles it. */
+       it hits a player, a monster, a wall, or its max range. PvP is ON:
+       bullets damage other players (the requested friend shooter). */
     shoot(id) {
       const p = this.players.get(id);
       if (!p || p.hp <= 0 || p.cd > 0) return false;
