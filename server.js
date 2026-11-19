@@ -184,7 +184,6 @@ server.on('upgrade', (req, sock) => {
     const dv = room.delve;
     if (msg.t === 'dir') dv.setDir(me.id, Number(msg.dx) || 0, Number(msg.dy) || 0);
     else if (msg.t === 'face') dv.face(me.id, Number(msg.dx) || 0, Number(msg.dy) || 0);
-    else if (msg.t === 'attack') dv.attack(me.id);
     else if (msg.t === 'shoot') dv.shoot(me.id);
     else if (msg.t === 'respawn') dv.respawn(me.id);
     else if (msg.t === 'debug_floor' && process.env.DENELLI_TEST_HOOK === '1') dv.loadFloor(Math.max(1, Number(msg.n) || 1));
