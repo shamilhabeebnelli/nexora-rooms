@@ -20,7 +20,7 @@ const joinBox = el('nelli-join'), nameIn = el('nelli-name'), playBtn = el('nelli
       joinErr = el('nelli-join-err'), hud = el('nelli-hud'), feed = el('nelli-feed'),
       deathBox = el('nelli-death'), deathStats = el('nelli-death-stats'),
       respawnBtn = el('nelli-respawn'), stick = el('nelli-stick'), knob = el('nelli-knob'),
-      atkBtn = el('nelli-atk'), shootBtn = el('nelli-shoot'), hpFill = el('nelli-hpfill'), hpText = el('nelli-hptext'),
+      shootBtn = el('nelli-shoot'), hpFill = el('nelli-hpfill'), hpText = el('nelli-hptext'),
       killsEl = el('nelli-kills'),
       partyEl = el('nelli-party'), placeEl = el('nelli-place'), targetIn = el('nelli-target'),
       hostIn = el('nelli-host');
@@ -73,11 +73,7 @@ function pushFeed(text) {
 function handleEvents(evs) {
   const now = performance.now();
   for (const e of evs || []) {
-    if (e.k === 'slash') {
-      const p = locateEntity(e.id);
-      if (p) S.slashFx.push({ x: p.x, y: p.y, until: now + 140 });
-      sfx('slash');
-    } else if (e.k === 'shot') {
+    if (e.k === 'shot') {
       const sp = locateEntity(e.id);
       if (sp) S.muzzleFx.push({ x: sp.x, y: sp.y, f: sp.f || [0, 1], until: now + 90 });
       sfx('shoot');
@@ -288,7 +284,6 @@ async function startHost(name) {
     }
     if (msg.t === 'dir') delve.setDir(pid, Number(msg.dx) || 0, Number(msg.dy) || 0);
     else if (msg.t === 'face') delve.face(pid, Number(msg.dx) || 0, Number(msg.dy) || 0);
-    else if (msg.t === 'attack') delve.attack(pid);
     else if (msg.t === 'shoot') delve.shoot(pid);
     else if (msg.t === 'respawn') delve.respawn(pid);
   });
@@ -346,7 +341,7 @@ function startPlay(label) {
       const st = S.state; if (st && st.you) NelliFps.setYawFromFace(st.you.f);
     });
   }
-  if ('ontouchstart' in window) { stick.classList.remove('nelli-hidden'); atkBtn.classList.remove('nelli-hidden'); shootBtn.classList.remove('nelli-hidden'); }
+  if ('ontouchstart' in window) { stick.classList.remove('nelli-hidden'); shootBtn.classList.remove('nelli-hidden'); }
   const sh = el('nelli-sound-hud'); if (sh) sh.classList.remove('nelli-hidden');
   S.joined = true;
   pushFeed(label);
@@ -361,12 +356,6 @@ function sendDir(dx, dy) {
   curMoveDir = [dx, dy];
   if (wsSend({ t: 'dir', dx, dy })) return;
   if (S.mode === 'solo' || S.mode === 'host') S.delve.setDir(S.myId, dx, dy);
-}
-function sendAttack() {
-  aimThen(() => {
-    if (wsSend({ t: 'attack' })) return;
-    if (S.mode === 'solo' || S.mode === 'host') S.delve.attack(S.myId);
-  });
 }
 function sendShoot() {
   aimThen(() => {
@@ -411,7 +400,7 @@ function keyDir() {
 }
 addEventListener('keydown', (e) => {
   if (!S.joined) return;
-  if (e.key === ' ' || e.key === 'j' || e.key === 'J') { e.preventDefault(); sendAttack(); return; }
+  if (e.key === ' ') { e.preventDefault(); sendShoot(); return; }
   if (e.key === 'k' || e.key === 'K' || e.key === 'l' || e.key === 'L') { e.preventDefault(); sendShoot(); return; }
   if (DIRS[e.key] !== undefined) {
     e.preventDefault();
@@ -463,8 +452,6 @@ const stickEnd = (e) => {
 };
 stick.addEventListener('touchend', stickEnd);
 stick.addEventListener('touchcancel', stickEnd);
-atkBtn.addEventListener('touchstart', (e) => { e.preventDefault(); sendAttack(); }, { passive: false });
-atkBtn.addEventListener('mousedown', (e) => { e.preventDefault(); sendAttack(); });
 shootBtn.addEventListener('touchstart', (e) => { e.preventDefault(); sendShoot(); }, { passive: false });
 shootBtn.addEventListener('mousedown', (e) => { e.preventDefault(); sendShoot(); });
 
@@ -856,7 +843,7 @@ function drawSlime(g, px, py, ts, hpFrac) {
 function updateHud(st, you) {
   hpFill.style.width = `${Math.max(0, (you.hp / you.mh) * 100)}%`;
   hpText.textContent = `${Math.max(0, you.hp)} / ${you.mh}`;
-  killsEl.textContent = `${you.kills} kills` + (you.shots ? ` · ${Math.round((100 * you.shotHits) / you.shots)}% acc` : '') + (you.swings ? ` · ${you.hits}/${you.swings} melee` : '');
+  killsEl.textContent = `${you.kills} kills` + (you.shots ? ` · ${Math.round((100 * you.shotHits) / you.shots)}% acc` : '');
   partyEl.textContent = `${st.party} online` + (S.room ? ` · room ${S.room}` : '') + (st.motm ? ` · MoM: ${st.motm}` : st.target ? ` · target ${st.target}` : '');
   placeEl.textContent = you.place ? `at ${you.place}` : '';
 }
