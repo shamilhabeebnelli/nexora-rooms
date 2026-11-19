@@ -1,0 +1,13 @@
+{
+  "name": "denelli-dungeon",
+  "version": "1.0.0",
+  "private": false,
+  "description": "NELLIWERSE room server - online multiplayer shooter on real Kondotty streets (5km radius, OpenStreetMap data ODbL). Free-tier WebSocket rooms: create team, join with code.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/net.test.js"
+  },
+  "license": "UNLICENSED",
+  "author": "shamil habeeb nelli (denelli)"
+}
