@@ -6,7 +6,7 @@ this repository's LICENSE restricts or claims rights over them.
 
 ## Three.js
 
-- File: `public/three.module.js`
+- Files: `public/three.module.js`, `public/GLTFLoader.js`, `public/BufferGeometryUtils.js`
 - Copyright 2010-2023 Three.js Authors
 - License: MIT
 
