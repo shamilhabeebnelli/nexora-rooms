@@ -68,7 +68,7 @@ body.nelli-shell {
 .nelli-shoot { bottom: 140px; font-size: 30px; color: #ece6d8;
   background: radial-gradient(circle at 35% 30%, #6d7a4e, #3f4a30); }
 
-.nelli-foot { position: fixed; bottom: 6px; left: 0; right: 0; text-align: center; font-size: 10px;
+.nelli-foot { position: fixed; bottom: 20px; pointer-events: none; left: 0; right: 0; text-align: center; font-size: 10px;
   letter-spacing: 1px; color: #6f6a55; z-index: 10; pointer-events: none; }
 
 /* startup splash: original geometric N, draws in then the whole veil fades */
@@ -143,3 +143,5 @@ body.nelli-shell {
 #nelli-crosshair::before, #nelli-crosshair::after { content: ''; position: absolute; background: #e8b23a; box-shadow: 0 0 3px #000; }
 #nelli-crosshair::before { left: 6px; top: 0; width: 2px; height: 14px; }
 #nelli-crosshair::after { left: 0; top: 6px; width: 14px; height: 2px; }
+
+.nelli-foot + .nelli-foot { bottom: 6px; opacity: 0.75; }
