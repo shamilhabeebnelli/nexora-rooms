@@ -8,6 +8,8 @@
   let walls = null, roads = null, dashes = null, ground = null;
   let othersGroup = null, mobGroup = null, projGroup = null, beaconGroup = null;
   let yaw = 0, pitch = 0, canvasEl = null;
+  let charTmpls = null; // {A: Object3D, B: Object3D} or null -> capsule fallback
+  const avatars = new Map(); // player id -> { obj, lx, ly, phase }
 
   function hash2(x, y) { let h = (x * 374761393 + y * 668265263) ^ 0x5bf03635; h = (h ^ (h >> 13)) * 1274126177; return ((h ^ (h >> 16)) >>> 0) / 4294967295; }
 
@@ -59,7 +61,21 @@
       othersGroup = new THREE.Group(); mobGroup = new THREE.Group();
       projGroup = new THREE.Group(); beaconGroup = new THREE.Group();
       scene.add(othersGroup, mobGroup, projGroup, beaconGroup);
+      // stylized characters replace capsule placeholders; capsule fallback stays if load fails
+      try {
+        const { GLTFLoader } = await import('./GLTFLoader.js');
+        const loader = new GLTFLoader();
+        const [ga, gb] = await Promise.all([
+          new Promise((res, rej) => loader.load('./charA.glb', res, undefined, rej)),
+          new Promise((res, rej) => loader.load('./charB.glb', res, undefined, rej)),
+        ]);
+        for (const g of [ga, gb]) {
+          g.scene.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; } });
+        }
+        charTmpls = { A: ga.scene, B: gb.scene };
+      } catch (ce) { charTmpls = null; console.log('char load failed, capsule fallback:', ce && ce.message); }
       ready = true;
+      window.__fpsDebug = { scene: () => scene, othersGroup: () => othersGroup, avatars, tmpls: () => charTmpls, cam: () => cam };
     } catch (e) { failed = true; console.log('fps3d init failed:', e && e.message); }
     return ready;
   }
@@ -106,14 +122,52 @@
     dashes.instanceMatrix.needsUpdate = true;
     if (walls.instanceColor) walls.instanceColor.needsUpdate = true;
 
-    // other players: plain capsules, NO floating names (identity stays hidden)
+    // other players: stylized characters (capsule fallback), NO floating names
     othersGroup.clear();
+    const seenIds = new Set();
     for (const o of st.others || []) {
-      const cap = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 1.05, 4, 10),
-        new THREE.MeshLambertMaterial({ color: new THREE.Color().setHSL(((o.hu || 0) * 36 % 360) / 360, 0.5, 0.5) }));
-      cap.position.set(o.x * TILE, 0.98, o.y * TILE);
-      othersGroup.add(cap);
+      seenIds.add(o.id);
+      let av = avatars.get(o.id);
+      if (!av) {
+        let obj;
+        if (charTmpls) {
+          const src = ((o.hu || 0) % 2 === 0) ? charTmpls.A : charTmpls.B;
+          obj = src.clone(true);
+          const shift = (((o.hu || 0) * 36) % 360) / 360 * 0.18 - 0.09;
+          obj.traverse((m) => {
+            if (m.isMesh && /shirt|pants/.test(m.material && m.material.name || '')) {
+              m.material = m.material.clone();
+              m.material.color.offsetHSL(shift, 0, 0);
+            }
+          });
+        } else {
+          obj = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 1.05, 4, 10),
+            new THREE.MeshLambertMaterial({ color: new THREE.Color().setHSL(((o.hu || 0) * 36 % 360) / 360, 0.5, 0.5) }));
+          obj.position.y = 0.98;
+          const wrap = new THREE.Group(); wrap.add(obj); obj = wrap;
+        }
+        av = { obj, lx: o.x, ly: o.y, phase: 0 };
+        avatars.set(o.id, av);
+      }
+      const moved = Math.hypot(o.x - av.lx, o.y - av.ly);
+      av.phase += moved * 9;
+      av.lx = o.x; av.ly = o.y;
+      const g = av.obj;
+      g.position.set(o.x * TILE, 0, o.y * TILE);
+      const fx = (o.f && o.f[0]) || 0, fy = (o.f && o.f[1]) || 0;
+      if (fx || fy) g.rotation.y = Math.atan2(fx, fy);
+      if (o.dead) {
+        g.rotation.x = -Math.PI / 2;
+        g.position.y = 0.15;
+      } else {
+        g.rotation.x = 0;
+        const bob = moved > 0.002 ? Math.abs(Math.sin(av.phase)) * 0.05 : 0;
+        g.position.y = 0.03 + bob;
+        g.rotation.z = moved > 0.002 ? Math.sin(av.phase) * 0.05 : 0;
+      }
+      othersGroup.add(g);
     }
+    for (const id of avatars.keys()) if (!seenIds.has(id)) avatars.delete(id);
     mobGroup.clear();
     for (const mb of st.mobs || []) {
       const cap = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 0.5, 4, 8),
