@@ -1094,6 +1094,7 @@ function updateLobby(msg) {
       if (m.id === msg.hostId) { const i = document.createElement('i'); i.textContent = 'host'; d.appendChild(i); }
       lobbyMembers.appendChild(d);
     }
+    if (lobby3d && lobby3d.syncChars) lobby3d.syncChars(msg.members.length);
   }
   const isHost = msg.hostId === S.myId;
   if (startBtn) startBtn.classList.toggle('nelli-hidden', !isHost);
@@ -1115,61 +1116,242 @@ function beginMatch() {
   // flight-landing intro intentionally disabled: held until a meaningful airport scene exists
   if (S.room) { pushFeed(`team code ${S.room} - friends join with this code`); showTeamCard(S.room); }
 }
-/* lobby backdrop: original low-poly character showcase on a dusk strip (no external assets) */
+/* lobby backdrop: 3D character showcase on a dusk airstrip apron (original scene,
+   reuses the in-game stylized characters; matches the user's BGMI-lobby reference
+   at mini scale: full 3D avatar center stage, teammates appear as they join) */
 let lobby3d = null;
-function initLobbyScene() {
-  /* 2D canvas lobby: dusk strip + edge lights + stylized figures. No extra WebGL context (phone memory). */
+async function initLobbyScene() {
   if (!lobbyCv || lobby3d) return;
-  const g = lobbyCv.getContext('2d');
-  if (!g) return;
   const st = { on: true };
-  lobby3d = { on: true, r: null, sc: null, cam: null, charObj: null, dispose2d: () => { st.on = false; } };
-  const draw2d = () => {
+  lobby3d = { on: true, r: null, dispose2d: () => { st.on = false; } };
+  let THREE;
+  try {
+    THREE = await import('./three.module.js');
+  } catch (e) { lobby3d = null; return; }
+  if (!st.on) return;
+  const r = new THREE.WebGLRenderer({ canvas: lobbyCv, antialias: true });
+  r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+  if (THREE.SRGBColorSpace) r.outputColorSpace = THREE.SRGBColorSpace;
+  r.shadowMap.enabled = true;
+  r.shadowMap.type = THREE.PCFSoftShadowMap;
+  lobby3d.r = r;
+  const sc = new THREE.Scene();
+  sc.background = new THREE.Color(0x11141f);
+  sc.fog = new THREE.Fog(0x14101d, 9, 46);
+  const cam = new THREE.PerspectiveCamera(38, 2, 0.1, 120);
+
+  /* dusk sky dome: deep indigo overhead, warm amber band at the horizon */
+  {
+    const c = document.createElement('canvas'); c.width = 4; c.height = 256;
+    const x = c.getContext('2d');
+    const gr = x.createLinearGradient(0, 0, 0, 256);
+    gr.addColorStop(0, '#0a0d18'); gr.addColorStop(0.55, '#1b1830');
+    gr.addColorStop(0.78, '#4a2b33'); gr.addColorStop(0.88, '#8a4b2e'); gr.addColorStop(1, '#c97f3a');
+    x.fillStyle = gr; x.fillRect(0, 0, 4, 256);
+    const tex = new THREE.CanvasTexture(c);
+    if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(60, 24, 16),
+      new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false }));
+    sc.add(dome);
+  }
+
+  /* lighting: cool dusk fill + low warm sun, long shadows; warm front key so the
+     characters read clearly against the dark apron (reference: lit hero on dark set) */
+  sc.add(new THREE.HemisphereLight(0x44527a, 0x241c14, 1.15));
+  const sun = new THREE.DirectionalLight(0xffb066, 1.6);
+  sun.position.set(-9, 5.5, -7);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.camera.left = -8; sun.shadow.camera.right = 8;
+  sun.shadow.camera.top = 8; sun.shadow.camera.bottom = -8;
+  sun.shadow.camera.far = 40;
+  sc.add(sun);
+  const rim = new THREE.DirectionalLight(0x5a76b8, 0.5);
+  rim.position.set(6, 4, 8);
+  sc.add(rim);
+  const key = new THREE.SpotLight(0xffd9a8, 2.2, 18, 0.62, 0.55, 1.2);
+  key.position.set(1.8, 3.6, 4.8);
+  key.target.position.set(0, 1.0, -0.3);
+  sc.add(key, key.target);
+
+  /* apron ground: dark asphalt with painted markings + amber edge lights */
+  {
+    const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+    const x = c.getContext('2d');
+    x.fillStyle = '#232429'; x.fillRect(0, 0, 512, 512);
+    let s = 91; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 1600; i++) {
+      x.fillStyle = rnd() < 0.5 ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.05)';
+      x.beginPath(); x.arc(rnd() * 512, rnd() * 512, 1 + rnd() * 3, 0, 7); x.fill();
+    }
+    x.strokeStyle = 'rgba(0,0,0,0.35)'; x.lineWidth = 2;           // slab joints
+    for (let i = 0; i <= 4; i++) {
+      x.beginPath(); x.moveTo(i * 128, 0); x.lineTo(i * 128, 512); x.stroke();
+      x.beginPath(); x.moveTo(0, i * 128); x.lineTo(512, i * 128); x.stroke();
+    }
+    x.strokeStyle = 'rgba(214,164,64,0.55)'; x.lineWidth = 5;      // taxi line
+    x.beginPath(); x.moveTo(0, 384); x.lineTo(512, 384); x.stroke();
+    const tex = new THREE.CanvasTexture(c);
+    if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(8, 8);
+    const gnd = new THREE.Mesh(new THREE.CircleGeometry(48, 40),
+      new THREE.MeshLambertMaterial({ map: tex }));
+    gnd.rotation.x = -Math.PI / 2; gnd.receiveShadow = true;
+    sc.add(gnd);
+  }
+  /* amber apron edge lights, gently pulsing */
+  const edgeLights = [];
+  {
+    const geo = new THREE.SphereGeometry(0.055, 8, 6);
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xe8b23a }));
+      m.position.set(Math.cos(a) * 6.2, 0.06, Math.sin(a) * 6.2);
+      sc.add(m); edgeLights.push(m);
+    }
+  }
+
+  /* backdrop silhouettes: small terminal block + control tower with red beacon,
+     broadleaf trees; fictional stylized airport, all original geometry */
+  const dark = new THREE.MeshLambertMaterial({ color: 0x1b1e26 });
+  const dark2 = new THREE.MeshLambertMaterial({ color: 0x232733 });
+  function box(w, h, d, x2, y2, z2, mat) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat || dark);
+    m.position.set(x2, y2, z2); m.castShadow = true; sc.add(m); return m;
+  }
+  // terminal: long low block with a warm-lit window band
+  box(16, 2.6, 3, -2, 1.3, -13, dark);
+  {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 16;
+    const x = c.getContext('2d');
+    x.fillStyle = '#14171f'; x.fillRect(0, 0, 256, 16);
+    for (let i = 0; i < 22; i++) {
+      x.fillStyle = i % 3 ? '#c98f3e' : '#3a4152';
+      x.fillRect(4 + i * 11.5, 4, 7, 8);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    const band = new THREE.Mesh(new THREE.BoxGeometry(15.6, 0.7, 0.1),
+      new THREE.MeshBasicMaterial({ map: tex }));
+    band.position.set(-2, 1.7, -11.44); sc.add(band);
+  }
+  box(3.2, 3.4, 3.2, 8.5, 1.7, -14.5, dark2);   // annex block
+  // control tower
+  {
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.8, 6.4, 10), dark2);
+    t.position.set(-10.5, 3.2, -12.5); t.castShadow = true; sc.add(t);
+    const cab = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 0.95, 1.1, 10),
+      new THREE.MeshLambertMaterial({ color: 0x2c3242, emissive: 0x3a2f18 }));
+    cab.position.set(-10.5, 6.9, -12.5); sc.add(cab);
+    const glass = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.0, 0.55, 10),
+      new THREE.MeshBasicMaterial({ color: 0xd9a24e }));
+    glass.position.set(-10.5, 6.85, -12.5); sc.add(glass);
+  }
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0xff4444, fog: false }));
+  beacon.position.set(-10.5, 7.7, -12.5); sc.add(beacon);
+  // distant tower silhouettes for depth
+  box(1.6, 7.5, 1.6, 14, 3.75, -24, dark);
+  box(1.1, 5.5, 1.1, -17, 2.75, -22, dark);
+  // broadleaf trees (Kerala-style blobs on trunks, matching in-game trees)
+  {
+    const trunkG = new THREE.CylinderGeometry(0.09, 0.14, 1.2, 6);
+    const canG = new THREE.IcosahedronGeometry(0.85, 1);
+    const trunkM = new THREE.MeshLambertMaterial({ color: 0x3a2e22 });
+    const canM = new THREE.MeshLambertMaterial({ color: 0x22301e });
+    const spots = [[-6.5, -8], [5.8, -9.5], [9.5, -6], [-9.8, -5.5], [12.5, -12], [-14, -9], [2.5, -10.5]];
+    for (const [tx2, tz2] of spots) {
+      const tr = new THREE.Mesh(trunkG, trunkM); tr.position.set(tx2, 0.6, tz2); tr.castShadow = true;
+      const cn = new THREE.Mesh(canG, canM); cn.position.set(tx2, 1.7, tz2); cn.castShadow = true;
+      cn.scale.set(1, 0.82 + (tx2 % 1) * 0.2, 1);
+      sc.add(tr, cn);
+    }
+  }
+  /* low haze planes for atmosphere */
+  {
+    const haze = new THREE.Mesh(new THREE.PlaneGeometry(70, 6),
+      new THREE.MeshBasicMaterial({ color: 0x2a2030, transparent: true, opacity: 0.35, fog: false, depthWrite: false }));
+    haze.position.set(0, 2.2, -20); sc.add(haze);
+  }
+
+  /* characters: own avatar center stage; teammates flank as they join.
+     Lobby owns its own clones + a tiny idle sway (no bones in these models). */
+  const charGroup = new THREE.Group();
+  sc.add(charGroup);
+  let tmpls = null;
+  try {
+    const { GLTFLoader } = await import('./GLTFLoader.js');
+    const loader = new GLTFLoader();
+    const [ga, gb] = await Promise.all([
+      new Promise((res, rej) => loader.load('./charA.glb', res, undefined, rej)),
+      new Promise((res, rej) => loader.load('./charB.glb', res, undefined, rej)),
+    ]);
+    for (const g of [ga, gb]) {
+      g.scene.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
+    }
+    tmpls = { A: ga.scene, B: gb.scene };
+  } catch (ce) { tmpls = null; }
+  if (!st.on) { try { r.renderLists.dispose(); r.dispose(); r.forceContextLoss(); } catch (e) {} return; }
+  function lobbyTint(root, hu) {
+    const shift = (((hu || 0) * 36) % 360) / 360 * 0.18 - 0.09;
+    root.traverse((m) => {
+      if (m.isMesh && /shirt|pants/.test(m.material && m.material.name || '')) {
+        m.material = m.material.clone();
+        m.material.color.offsetHSL(shift, 0, 0);
+      }
+    });
+  }
+  const MAXLOBBYCHARS = 6;
+  function lobbySpot(i, n) {  // arc behind center, own char at 0
+    if (i === 0) return { x: 0, z: 0, ry: 0 };
+    const k = i - 1, spread = Math.min(n - 1, 5);
+    const a = spread === 1 ? 0 : (k / (spread - 1) - 0.5) * 1.5;
+    return { x: Math.sin(a) * 2.1, z: -1.1 + Math.abs(Math.cos(a)) * 0.0 - 0.15, ry: -a * 0.55 };
+  }
+  function syncLobbyChars(n) {
+    if (!tmpls) return;
+    n = Math.max(1, Math.min(MAXLOBBYCHARS, n | 0));
+    while (charGroup.children.length < n) {
+      const i = charGroup.children.length;
+      const obj = (i % 2 === 0 ? tmpls.A : tmpls.B).clone(true);
+      if (i > 0) lobbyTint(obj, i);
+      obj.userData.ph = i * 1.31;
+      charGroup.add(obj);
+    }
+    while (charGroup.children.length > n) charGroup.remove(charGroup.children[charGroup.children.length - 1]);
+    charGroup.children.forEach((o, i) => {
+      const p = lobbySpot(i, n);
+      o.position.set(p.x, 0, p.z);
+      o.rotation.y = p.ry;
+    });
+  }
+  syncLobbyChars(lobbyMembers ? Math.max(1, lobbyMembers.children.length) : 1);
+  lobby3d.syncChars = syncLobbyChars;
+
+  const clockT0 = performance.now();
+  const loop = () => {
     if (!st.on || !lobby3d || !lobby3d.on) return;
-    requestAnimationFrame(draw2d);
+    requestAnimationFrame(loop);
+    const t = (performance.now() - clockT0) / 1000;
     const w = lobbyCv.clientWidth || 2, h = lobbyCv.clientHeight || 2;
-    if (lobbyCv.width !== w || lobbyCv.height !== h) { lobbyCv.width = w; lobbyCv.height = h; }
-    // dusk sky
-    const sky = g.createLinearGradient(0, 0, 0, h);
-    sky.addColorStop(0, '#141a2c'); sky.addColorStop(0.62, '#232033'); sky.addColorStop(0.63, '#2b2b30'); sky.addColorStop(1, '#232428');
-    g.fillStyle = sky; g.fillRect(0, 0, w, h);
-    const horizon = h * 0.62;
-    // runway strip receding to the horizon
-    g.fillStyle = '#33363e';
-    g.beginPath();
-    g.moveTo(w * 0.44, horizon); g.lineTo(w * 0.56, horizon);
-    g.lineTo(w * 0.86, h); g.lineTo(w * 0.14, h); g.closePath(); g.fill();
-    // amber edge lights
-    const t = performance.now() / 1000;
-    for (let i = 0; i < 9; i++) {
-      const k = i / 9, y = horizon + (h - horizon) * k * k;
-      const spread = 0.05 + 0.32 * k * k;
-      const r = 1.2 + 3.4 * k;
-      const glow = 0.55 + 0.45 * Math.sin(t * 2.4 - i * 0.9);
-      g.fillStyle = `rgba(232,178,58,${0.35 + 0.5 * glow})`;
-      g.beginPath(); g.arc(w * (0.5 - spread), y, r, 0, 7); g.fill();
-      g.beginPath(); g.arc(w * (0.5 + spread), y, r, 0, 7); g.fill();
+    if (lobbyCv.width !== (w * r.getPixelRatio() | 0) || lobbyCv.height !== (h * r.getPixelRatio() | 0)) {
+      r.setSize(w, h, false);
+      cam.aspect = w / h; cam.updateProjectionMatrix();
     }
-    // centerline dashes
-    g.fillStyle = 'rgba(232,226,210,.5)';
-    for (let i = 0; i < 7; i++) {
-      const k = i / 7, y = horizon + (h - horizon) * k * k;
-      g.fillRect(w / 2 - 1, y, 2, 3 + 8 * k);
-    }
-    // team figures on the strip (stylized, original)
-    const members = (lobbyMembers ? lobbyMembers.children.length : 1) || 1;
-    for (let i = 0; i < Math.min(members, 8); i++) {
-      const fx2 = w * (0.38 + 0.24 * (members === 1 ? 0.5 : i / (members - 1)));
-      const fy = h * 0.8, s = h * 0.055;
-      const bob = Math.sin(t * 1.6 + i * 1.7) * s * 0.06;
-      g.fillStyle = i === 0 ? '#e8b23a' : '#b8b2a2';
-      g.beginPath(); g.arc(fx2, fy - s * 2.1 + bob, s * 0.42, 0, 7); g.fill(); // head
-      g.fillRect(fx2 - s * 0.34, fy - s * 1.7 + bob, s * 0.68, s * 1.1);       // torso
-      g.fillRect(fx2 - s * 0.3, fy - s * 0.6 + bob, s * 0.24, s * 0.62);       // legs
-      g.fillRect(fx2 + s * 0.06, fy - s * 0.6 + bob, s * 0.24, s * 0.62);
-    }
+    // slow camera drift around the team, eye height near chest
+    const ca = Math.sin(t * 0.16) * 0.42;
+    cam.position.set(Math.sin(ca) * 4.6, 1.62 + Math.sin(t * 0.23) * 0.07, Math.cos(ca) * 4.6);
+    cam.lookAt(0, 0.98, -0.3);
+    // idle sway: breathing bob + tiny turn, no skeletal animation available
+    charGroup.children.forEach((o) => {
+      o.position.y = Math.sin(t * 1.5 + o.userData.ph) * 0.012;
+      o.rotation.y += Math.sin(t * 0.4 + o.userData.ph) * 0.0006;
+    });
+    edgeLights.forEach((m, i) => { m.scale.setScalar(0.8 + 0.35 * (0.5 + 0.5 * Math.sin(t * 2.2 - i * 0.45))); });
+    beacon.visible = (t % 1.6) < 0.9;
+    r.render(sc, cam);
   };
-  draw2d();
+  loop();
 }
 function stopLobbyScene() {
   if (!lobby3d) return;
