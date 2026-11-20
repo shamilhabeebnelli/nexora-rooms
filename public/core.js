@@ -37,7 +37,7 @@
   const TILE_M = 1.6, WALLH_M = 3.6;
   const STANCE_EYE = { stand: 1.55, crouch: 1.05, prone: 0.55 };
   const STANCE_TOP = { stand: 1.8, crouch: 1.15, prone: 0.65 };
-  const STANCE_STEP = { stand: 2, crouch: 3, prone: 4 };
+  const STANCE_SPEED = { stand: 4, crouch: 2.3, prone: 1.2 }; // metres/second at 10Hz
   function wallHash(x, y) { let h = (x * 374761393 + y * 668265263) ^ 0x5bf03635; h = (h ^ (h >> 13)) * 1274126177; return ((h ^ (h >> 16)) >>> 0) / 4294967295; }
   function wallHeightAt(gx, gy) { return WALLH_M * (0.75 + wallHash(gx, gy) * 0.9); }
   const MAP_W = 84, MAP_H = 70;
@@ -332,11 +332,17 @@
     }
 
     walkable(x, y) {
-      if (x < 0 || y < 0 || x >= this.map.w || y >= this.map.h) return false;
+      x = Math.round(x); y = Math.round(y);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= this.map.w || y >= this.map.h) return false;
       return this.map.grid[y * this.map.w + x] !== T.WALL;
     }
     mobAt(x, y) { for (const m of this.mobs.values()) if (m.x === x && m.y === y) return m; return null; }
-    playerAt(x, y, except) { for (const p of this.players.values()) if (p !== except && p.x === x && p.y === y && p.hp > 0) return p; return null; }
+    playerAt(x, y, except) { for (const p of this.players.values()) if (p !== except && Math.hypot(p.x - x, p.y - y) < 0.55 && p.hp > 0) return p; return null; }
+    canMove(p, x, y) {
+      const r = 0.19;
+      return [[-r,-r],[r,-r],[-r,r],[r,r]].every(([dx,dy]) => this.walkable(x+dx,y+dy)) &&
+        !this.mobAt(Math.round(x), Math.round(y)) && !this.playerAt(x, y, p);
+    }
     /* projectile hits use a radius: free-aim bullets travel through float positions, and 0.6
        covers tile-center crossings without hitting players a full tile off the path */
     playerHitAt(x, y, except, z) {
@@ -401,7 +407,10 @@
         hp: 100, maxHp: 100, dmg: 12,
         gold: 0, kills: 0, deaths: 0, hits: 0, swings: 0, shots: 0, shotHits: 0, rebirthAt: 0,
         cd: 0, hurtCd: 0,
-        dir: null, face: [0, 1],
+        dir: null, dirTick: this.tickCount,
+        face: spot.x === this.map.spawn.x && spot.y === this.map.spawn.y ? [0, -1] :
+          (() => { const dx = this.map.spawn.x - spot.x, dy = this.map.spawn.y - spot.y;
+            const n = Math.hypot(dx, dy); return [dx / n, dy / n]; })(),
         stance: 'stand',
         hue: (id * 67) % 360,
       };
@@ -415,10 +424,12 @@
     }
     setDir(id, dx, dy) {
       const p = this.players.get(id);
-      if (!p) return;
-      dx = Math.sign(dx) || 0; dy = Math.sign(dy) || 0;
-      p.dir = (dx || dy) ? { dx, dy } : null;
-      if (dx || dy) p.face = [dx, dy];
+      if (!p || p.hp <= 0) return;
+      dx = Number.isFinite(dx) ? dx : 0; dy = Number.isFinite(dy) ? dy : 0;
+      const len = Math.max(1, Math.hypot(dx, dy));
+      dx /= len; dy /= len;
+      p.dir = Math.hypot(dx, dy) > 0.01 ? { dx, dy } : null;
+      p.dirTick = this.tickCount; // drop a held direction if input stops arriving
     }
 
     /* aim without moving: the shooter looks one way, walks another */
@@ -426,7 +437,7 @@
       const p = this.players.get(id);
       if (!p) return;
       const len = Math.hypot(dx, dy);
-      if (len > 0.01) p.face = [dx / len, dy / len]; // exact free-aim vector; unit length keeps bullet speed constant
+      if (Number.isFinite(len) && len > 0.01) p.face = [dx / len, dy / len]; // exact free-aim vector; unit length keeps bullet speed constant
     }
     respawn(id) {
       const p = this.players.get(id);
@@ -438,6 +449,7 @@
        walkable tiles from the death spot, first station reached wins.
        Straight-line distance can pick a station walled off from you. */
     nearestPolice(x, y) {
+      x = Math.round(x); y = Math.round(y);
       const stations = this.map.police || [];
       if (!stations.length) return null;
       const W5 = this.map.w, H5 = this.map.h;
@@ -471,6 +483,7 @@
       const s = this.freeSpotNear(at.x, at.y);
       p.x = s.x; p.y = s.y;
       p.hp = p.maxHp;
+      p.dir = null;
       p.rebirthAt = 0;
       p.place = placeAt(this.map, p.x, p.y);
       this.events.push({ k: 'rebirth', id: p.id, name: p.name, town: st ? st.town : null });
@@ -513,19 +526,23 @@
         }
         p.cd = Math.max(0, p.cd - 1);
         p.hurtCd = Math.max(0, p.hurtCd - 1);
-        const step = STANCE_STEP[p.stance] || 2; // crouch/prone move slower
-        if (p.dir && this.tickCount % step === 0) {
-          const nx = p.x + p.dir.dx, ny = p.y + p.dir.dy;
-          if (this.walkable(nx, ny) && !this.mobAt(nx, ny) && !this.playerAt(nx, ny, p)) { p.x = nx; p.y = ny; }
+        if (p.dir && this.tickCount - p.dirTick > 6) p.dir = null;
+        if (p.dir) {
+          const distance = (STANCE_SPEED[p.stance] || 4) / TILE_M / 10;
+          const nx = p.x + p.dir.dx * distance, ny = p.y + p.dir.dy * distance;
+          // Axis separation permits wall sliding without faster diagonal travel.
+          if (this.canMove(p, nx, p.y)) p.x = nx;
+          if (this.canMove(p, p.x, ny)) p.y = ny;
         }
-        const t = this.map.grid[p.y * this.map.w + p.x];
+        const tileIndex = Math.round(p.y) * this.map.w + Math.round(p.x);
+        const t = this.map.grid[tileIndex];
         if (t === T.POTION) {
           p.hp = Math.min(p.maxHp, p.hp + 30);
-          this.map.grid[p.y * this.map.w + p.x] = T.FLOOR;
+          this.map.grid[tileIndex] = T.FLOOR;
           this.events.push({ k: 'heal', id: p.id });
         } else if (t === T.GOLD) {
           p.gold += 10 + this.floor * 2;
-          this.map.grid[p.y * this.map.w + p.x] = T.FLOOR;
+          this.map.grid[tileIndex] = T.FLOOR;
           this.events.push({ k: 'gold', id: p.id });
         } else if (t === T.STAIRS) {
           this.events.push({ k: 'descend', floor: this.floor + 1, by: p.name, arena: (this.floor + 1) % 2 === 0 });
@@ -626,8 +643,8 @@
       const p = this.players.get(id);
       if (!p) return null;
       const r = VIEW_RADIUS;
-      const x0 = Math.max(0, p.x - r), x1 = Math.min(this.map.w - 1, p.x + r);
-      const y0 = Math.max(0, p.y - r), y1 = Math.min(this.map.h - 1, p.y + r);
+      const x0 = Math.max(0, Math.round(p.x) - r), x1 = Math.min(this.map.w - 1, Math.round(p.x) + r);
+      const y0 = Math.max(0, Math.round(p.y) - r), y1 = Math.min(this.map.h - 1, Math.round(p.y) + r);
       const tiles = [];
       for (let y = y0; y <= y1; y++) {
         let row = '';
@@ -637,7 +654,8 @@
       const near = (e) => e.x >= x0 && e.x <= x1 && e.y >= y0 && e.y <= y1;
       const others = [];
       for (const q of this.players.values()) {
-        if (q.id !== id && near(q)) others.push({ id: q.id, n: q.name, x: q.x, y: q.y, hp: q.hp, mh: q.maxHp, hu: q.hue, dead: q.hp <= 0, f: q.face, j: q.jumpUntil > this.tickCount ? 1 : 0, st: q.stance });
+        // Room roster is independent of terrain culling; fog/walls still occlude models.
+        if (q.id !== id) others.push({ id: q.id, n: q.name, x: q.x, y: q.y, hp: q.hp, mh: q.maxHp, hu: q.hue, dead: q.hp <= 0, f: q.face, j: q.jumpUntil > this.tickCount ? 1 : 0, st: q.stance });
       }
       const mobs = [];
       for (const m of this.mobs.values()) if (near(m)) mobs.push({ id: m.id, x: m.x, y: m.y, hp: m.hp, mh: m.maxHp });
