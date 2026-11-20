@@ -510,8 +510,8 @@
         g.rotation.x = -Math.PI / 2;
         g.position.y = 0.15;
       } else if (o.st === 'prone') {
-        g.rotation.x = -1.25; // lying, roughly face-down
-        g.position.y = 0.18;
+        g.rotation.x = -Math.PI / 2; // fully flat, face-down: no bones in the model, so the whole body lies on the ground plane and the arms lie flat instead of tipping upward
+        g.position.y = 0.12;
         g.rotation.z = 0;
       } else if (o.st === 'crouch') {
         g.rotation.x = 0;
@@ -655,7 +655,7 @@
       selfAv.position.set(me.x * TILE, 0.03 + sjoff + (smoved > 0.002 ? Math.abs(Math.sin(selfPhase)) * 0.05 : 0), me.y * TILE);
       selfAv.rotation.y = Math.atan2(Math.sin(yaw), -Math.cos(yaw)); // same facing convention as other avatars: map forward (sin yaw, -cos yaw)
       selfAv.scale.set(1, 1, 1); selfAv.rotation.x = 0;
-      if (me.st === 'prone') { selfAv.rotation.x = -1.25; selfAv.position.y = 0.18 + sjoff * 0.45; }
+      if (me.st === 'prone') { selfAv.rotation.x = -Math.PI / 2; selfAv.position.y = 0.12 + sjoff * 0.45; }
       else if (me.st === 'crouch') selfAv.scale.set(1, 0.72, 1);
       // boom: pull camera back along its own -forward, clamp before walls
       const THREE = window.__THREE;
