@@ -343,7 +343,7 @@
   let selfAnim = null;
   /* 10Hz server snapshots stepped the camera; smooth them: remember the last state
      change to extrapolate by velocity, and ease position/eye/boom every frame. */
-  let smX = null, smY = null, eyeCur = null, boomCur = 0, lastRT = 0;
+  let smX = null, smY = null, eyeCur = null, boomCur = 0, lastRT = 0, dynDt = 0.016;
   let stX = null, stY = null, stT = 0, stVx = 0, stVy = 0;
   function setQuality(q) {
     const preset = QUALITY[q];
@@ -510,9 +510,9 @@
       const g = av.obj;
       /* snapshots step at 10Hz; ease each avatar toward the latest point instead */
       {
-        const k = Math.min(1, dt * 12);
+        const k = Math.min(1, dynDt * 12);
         av.sx += (o.x * TILE - av.sx) * k; av.sy += (o.y * TILE - av.sy) * k;
-        av.mv += ((moved > 0.002 ? 1 : 0) - av.mv) * Math.min(1, dt * 10);
+        av.mv += ((moved > 0.002 ? 1 : 0) - av.mv) * Math.min(1, dynDt * 10);
         if (av.anim) { av.anim.uPhase.value = av.phase; av.anim.uMove.value = av.mv; }
       }
       if (o.j && !av.jt) av.jt = performance.now();
@@ -673,6 +673,7 @@
     const nowMs = performance.now();
     const dt = lastRT ? Math.min(0.05, (nowMs - lastRT) / 1000) : 0.016;
     lastRT = nowMs;
+    dynDt = dt; // rebuildDynamic runs via rebuild() below and shares this frame's dt
     resize();
     rebuild(st);
     const me = st.you;
