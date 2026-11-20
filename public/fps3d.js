@@ -315,6 +315,13 @@
           g.scene.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
         }
         charTmpls = { A: ga.scene, B: gb.scene, AP: gap.scene, BP: gbp.scene };
+        // pre-create the TPP self avatar + warm shaders/textures now, so the first
+        // FPP->TPP switch mid-game does not clone 90k verts or compile on the spot
+        ensureSelfAv();
+        if (renderer.compile) renderer.compile(scene, cam);
+        scene.traverse((o) => {
+          if (o.isMesh && o.material && o.material.map && renderer.initTexture) renderer.initTexture(o.material.map);
+        });
       } catch (ce) { charTmpls = null; console.log('char load failed, capsule fallback:', ce && ce.message); }
       ready = true;
       window.__fpsDebug = { scene: () => scene, othersGroup: () => othersGroup, avatars, tmpls: () => charTmpls, cam: () => cam, self: () => selfAv, tileAt: (x, z) => (dbgSt ? tileCodeAt(dbgSt, x, z) : -1), info: () => renderer.info.render };
@@ -333,6 +340,11 @@
   let fpsFrames = 0, fpsLast = 0, fpsValue = 0;
   /* third/first person: camera boom + own avatar, client-side only (server sim unchanged) */
   let camMode = 'fpp', selfAv = null, selfLx = 0, selfLy = 0, selfPhase = 0, dbgSt = null;
+  let selfAnim = null;
+  /* 10Hz server snapshots stepped the camera; smooth them: remember the last state
+     change to extrapolate by velocity, and ease position/eye/boom every frame. */
+  let smX = null, smY = null, eyeCur = null, boomCur = 0, lastRT = 0;
+  let stX = null, stY = null, stT = 0, stVx = 0, stVy = 0;
   function setQuality(q) {
     const preset = QUALITY[q];
     if (!preset) return false;
@@ -476,45 +488,42 @@
       seenIds.add(o.id);
       let av = avatars.get(o.id);
       if (!av) {
-        let obj;
+        let obj, av_anim = null;
         if (charTmpls) {
           const even = ((o.hu || 0) % 2 === 0);
-          const up = (even ? charTmpls.A : charTmpls.B).clone(true);
-          const pr = (even ? charTmpls.AP : charTmpls.BP).clone(true);
-          pr.rotation.x = Math.PI / 2; // face-down, head toward facing; arms (mesh-rotated forward) lie flat ahead
-          pr.position.y = 0.22;
-          pr.visible = false;
-          obj = new THREE.Group(); obj.add(up); obj.add(pr); obj.userData.up = up; obj.userData.pr = pr;
-          const shift = (((o.hu || 0) * 36) % 360) / 360 * 0.18 - 0.09;
-          obj.traverse((m) => {
-            if (m.isMesh && /shirt|pants/.test(m.material && m.material.name || '')) {
-              m.material = m.material.clone();
-              m.material.color.offsetHSL(shift, 0, 0);
-            }
-          });
+          const anim = { uPhase: { value: 0 }, uMove: { value: 0 } };
+          obj = makeCharGroup(even, anim);
+          hueShift(obj, o.hu || 0);
+          av_anim = anim;
         } else {
           obj = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 1.05, 4, 10),
             new THREE.MeshLambertMaterial({ color: new THREE.Color().setHSL(((o.hu || 0) * 36 % 360) / 360, 0.5, 0.5) }));
           obj.position.y = 0.98; obj.castShadow = true;
           const wrap = new THREE.Group(); wrap.add(obj); obj = wrap;
         }
-        av = { obj, lx: o.x, ly: o.y, phase: 0, jt: 0 };
+        av = { obj, anim: av_anim, lx: o.x, ly: o.y, phase: 0, jt: 0, sx: o.x * TILE, sy: o.y * TILE, mv: 0 };
         avatars.set(o.id, av);
       }
       const moved = Math.hypot(o.x - av.lx, o.y - av.ly);
       av.phase += moved * 9;
       av.lx = o.x; av.ly = o.y;
       const g = av.obj;
+      /* snapshots step at 10Hz; ease each avatar toward the latest point instead */
+      {
+        const k = Math.min(1, dt * 12);
+        av.sx += (o.x * TILE - av.sx) * k; av.sy += (o.y * TILE - av.sy) * k;
+        av.mv += ((moved > 0.002 ? 1 : 0) - av.mv) * Math.min(1, dt * 10);
+        if (av.anim) { av.anim.uPhase.value = av.phase; av.anim.uMove.value = av.mv; }
+      }
       if (o.j && !av.jt) av.jt = performance.now();
       if (!o.j) av.jt = 0;
       const je = av.jt ? Math.min((performance.now() - av.jt) / 600, 1) : 0;
       const joff = av.jt ? Math.sin(Math.PI * je) * 0.7 : 0;
-      g.position.set(o.x * TILE, 0, o.y * TILE);
+      g.position.set(av.sx, 0, av.sy);
       const fx = (o.f && o.f[0]) || 0, fy = (o.f && o.f[1]) || 0;
       if (fx || fy) g.rotation.y = Math.atan2(fx, fy);
       g.scale.set(1, 1, 1);
-      const showProne = !o.dead && o.st === 'prone' && g.userData.pr;
-      if (g.userData.up) { g.userData.up.visible = !showProne; g.userData.pr.visible = !!showProne; }
+      showStance(g, o.st, !!o.dead);
       if (o.dead) {
         g.rotation.x = -Math.PI / 2;
         g.position.y = 0.15;
@@ -524,7 +533,7 @@
         g.rotation.z = 0;
       } else if (o.st === 'crouch') {
         g.rotation.x = 0;
-        g.scale.set(1, 0.72, 1);
+        g.scale.set(1, 0.72, 1); // uniform squash (prior live behavior; mesh replacement parked)
         const bob = moved > 0.002 ? Math.abs(Math.sin(av.phase)) * 0.03 : 0;
         g.position.y = 0.03 + bob + joff;
         g.rotation.z = moved > 0.002 ? Math.sin(av.phase) * 0.04 : 0;
@@ -574,28 +583,84 @@
     return line.charCodeAt(gx) - 48;
   }
 
+  /* boneless-mesh walk cycle: per-avatar cloned materials get uPhase/uMove uniforms;
+     legs and hanging arms swing along local z in the vertex shader. Honest procedural
+     motion, not skinned animation - no joint claims. */
+  function addWalkAnim(root, anim) {
+    root.traverse((mm) => {
+      if (!mm.isMesh || !mm.material) return;
+      mm.material = mm.material.clone();
+      mm.material.onBeforeCompile = (sh) => {
+        sh.uniforms.uPhase = anim.uPhase;
+        sh.uniforms.uMove = anim.uMove;
+        sh.vertexShader = 'uniform float uPhase;\nuniform float uMove;\n' + sh.vertexShader.replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\n{' +
+          ' float side = transformed.x >= 0.0 ? 0.0 : 3.14159;' +
+          ' float legW = clamp((0.95 - transformed.y) / 0.95, 0.0, 1.0);' +
+          ' float armM = (abs(transformed.x) > 0.2 && transformed.y > 0.85 && transformed.y < 1.6) ? 1.0 : 0.0;' +
+          ' float armW = clamp((1.35 - transformed.y) / 0.5, 0.0, 1.0) * armM;' +
+          ' transformed.z += uMove * (sin(uPhase + side) * legW * 0.34 + sin(uPhase + side + 3.14159) * armW * 0.26);' +
+          ' transformed.z += uMove * 0.05 * transformed.y;' +
+          '}');
+      };
+      mm.material.needsUpdate = true;
+    });
+  }
+
+  function hueShift(root, hu) {
+    const shift = (((hu || 0) * 36) % 360) / 360 * 0.18 - 0.09;
+    root.traverse((m) => {
+      if (m.isMesh && /shirt|pants/.test(m.material && m.material.name || '')) {
+        m.material = m.material.clone();
+        m.material.color.offsetHSL(shift, 0, 0);
+      }
+    });
+  }
+
+  /* one group with upright + prone children; visibility picks the stance.
+     crouch stays the prior uniform squash: a visibly-sound knees-bent mesh
+     replacement was attempted and rejected; do not re-add without parent pixel sign-off */
+  function makeCharGroup(even, anim) {
+    const THREE = window.__THREE;
+    const up = (even ? charTmpls.A : charTmpls.B).clone(true);
+    const pr = (even ? charTmpls.AP : charTmpls.BP).clone(true);
+    pr.rotation.x = Math.PI / 2; // face-down, head toward facing; arms (mesh-rotated forward) lie flat ahead
+    pr.position.y = 0.22;
+    pr.visible = false;
+    if (anim) addWalkAnim(up, anim); // walk swing only on the upright stance
+    const g = new THREE.Group();
+    g.add(up); g.add(pr);
+    g.userData.up = up; g.userData.pr = pr;
+    return g;
+  }
+  function showStance(g, st, dead) {
+    if (!g.userData.up) return;
+    g.userData.up.visible = !dead && st !== 'prone';
+    g.userData.pr.visible = !dead && st === 'prone';
+  }
+
+  function ensureSelfAv() {
+    if (selfAv || !scene) return;
+    const THREE = window.__THREE;
+    if (charTmpls) {
+      selfAnim = { uPhase: { value: 0 }, uMove: { value: 0 } };
+      selfAv = makeCharGroup(true, selfAnim);
+    } else {
+      const cap = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 1.05, 4, 10),
+        new THREE.MeshLambertMaterial({ color: 0xc9a35a }));
+      cap.position.y = 0.98; cap.castShadow = true;
+      selfAv = new THREE.Group(); selfAv.add(cap);
+    }
+    selfAv.visible = false;
+    scene.add(selfAv);
+  }
+
   function setCamMode(m) {
     if (m !== 'fpp' && m !== 'tpp') return false;
     camMode = m;
     if (ready) {
-      if (m === 'tpp' && !selfAv) {
-        const THREE = window.__THREE;
-        if (charTmpls) {
-          const up = charTmpls.A.clone(true);
-          const pr = charTmpls.AP.clone(true);
-          pr.rotation.x = Math.PI / 2;
-          pr.position.y = 0.22;
-          pr.visible = false;
-          selfAv = new THREE.Group(); selfAv.add(up); selfAv.add(pr);
-          selfAv.userData.up = up; selfAv.userData.pr = pr;
-        } else {
-          const cap = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 1.05, 4, 10),
-            new THREE.MeshLambertMaterial({ color: 0xc9a35a }));
-          cap.position.y = 0.98; cap.castShadow = true;
-          selfAv = new THREE.Group(); selfAv.add(cap);
-        }
-        scene.add(selfAv);
-      }
+      ensureSelfAv();
       if (selfAv) selfAv.visible = (m === 'tpp');
       if (gun) gun.visible = (m === 'fpp');
     }
@@ -605,9 +670,25 @@
   function render(st) {
     if (!ready || !st || !st.you) return;
     dbgSt = st;
+    const nowMs = performance.now();
+    const dt = lastRT ? Math.min(0.05, (nowMs - lastRT) / 1000) : 0.016;
+    lastRT = nowMs;
     resize();
     rebuild(st);
     const me = st.you;
+    /* velocity extrapolation from the last snapshot change, capped small */
+    if (stX === null || me.x !== stX || me.y !== stY) {
+      const dtt = stT ? Math.max(0.05, (nowMs - stT) / 1000) : 0.1;
+      if (stX !== null) { stVx = (me.x - stX) / dtt; stVy = (me.y - stY) / dtt; }
+      stX = me.x; stY = me.y; stT = nowMs;
+    }
+    {
+      const age = Math.min(0.12, (nowMs - stT) / 1000);
+      const tx = (me.x + stVx * age) * TILE, ty = (me.y + stVy * age) * TILE;
+      if (smX === null) { smX = tx; smY = ty; }
+      const k = Math.min(1, dt * 14);
+      smX += (tx - smX) * k; smY += (ty - smY) * k;
+    }
     if (me.j && !selfJt) selfJt = performance.now();
     if (!me.j) selfJt = 0;
     const sje = selfJt ? Math.min((performance.now() - selfJt) / 600, 1) : 0;
@@ -624,8 +705,11 @@
       sunSprite.position.set(px + SUN_DIR.x * sunR, SUN_DIR.y * sunR, pz + SUN_DIR.z * sunR);
       sunSprite.scale.set(cam.far * 0.13, cam.far * 0.13, 1);
     }
-    const eyeNow = eyeH(me.st);
-    cam.position.set(me.x * TILE, eyeNow + sjoff, me.y * TILE);
+    const eyeTgt = eyeH(me.st);
+    if (eyeCur === null) eyeCur = eyeTgt;
+    eyeCur += (eyeTgt - eyeCur) * Math.min(1, dt * 10); // stance changes ease instead of snapping
+    const eyeNow = eyeCur;
+    cam.position.set(smX, eyeNow + sjoff, smY);
     const at = adsOn ? 1 : 0;
     if (adsT !== at) {
       adsT += (at - adsT) * 0.35;
@@ -664,30 +748,35 @@
       }
     }
     if (camMode === 'tpp' && selfAv) {
-      // own avatar stands at the player, faces movement/aim yaw, bobs like other avatars
+      // own avatar stands at the player, faces movement/aim yaw, walks with a real cycle
       const smoved = Math.hypot(me.x - selfLx, me.y - selfLy);
       selfPhase += smoved * 9; selfLx = me.x; selfLy = me.y;
-      selfAv.position.set(me.x * TILE, 0.03 + sjoff + (smoved > 0.002 ? Math.abs(Math.sin(selfPhase)) * 0.05 : 0), me.y * TILE);
+      if (selfAnim) {
+        selfAnim.uPhase.value = selfPhase;
+        selfAnim.uMove.value += ((smoved > 0.002 ? 1 : 0) - selfAnim.uMove.value) * Math.min(1, dt * 10);
+      }
+      selfAv.position.set(smX, 0.03 + sjoff + (smoved > 0.002 ? Math.abs(Math.sin(selfPhase)) * 0.05 : 0), smY);
       selfAv.rotation.y = Math.atan2(Math.sin(yaw), -Math.cos(yaw)); // same facing convention as other avatars: map forward (sin yaw, -cos yaw)
       selfAv.scale.set(1, 1, 1); selfAv.rotation.x = 0;
-      const selfProne = me.st === 'prone' && selfAv.userData.pr;
-      if (selfAv.userData.up) { selfAv.userData.up.visible = !selfProne; selfAv.userData.pr.visible = !!selfProne; }
+      showStance(selfAv, me.st, false);
       if (me.st === 'prone') { selfAv.position.y = sjoff * 0.45; }
-      else if (me.st === 'crouch') selfAv.scale.set(1, 0.72, 1);
-      // boom: pull camera back along its own -forward, clamp before walls
+      else if (me.st === 'crouch') selfAv.scale.set(1, 0.72, 1); // prior live squash
+      // boom: pull camera back along its own -forward, clamp before walls, ease changes
       const THREE = window.__THREE;
       const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
       let boom = 3.2 - 1.8 * adsT;
       for (let t = 0.4; t <= boom; t += 0.4) {
-        if (tileCodeAt(st, cam.position.x - dir.x * t, cam.position.z - dir.z * t) === 0) { boom = Math.max(0.35, t - 0.45); break; }
+        if (tileCodeAt(st, smX - dir.x * t, smY - dir.z * t) === 0) { boom = Math.max(0.35, t - 0.45); break; }
       }
+      boomCur += (boom - boomCur) * Math.min(1, dt * 7); // camera glides out/in on switch instead of snapping
       cam.position.set(
-        cam.position.x - dir.x * boom,
-        Math.max(0.3, eyeNow + sjoff * 0.45 - dir.y * boom + 0.18), // TPP camera follows the hop partially, so the avatar reads against the scene
-        cam.position.z - dir.z * boom);
+        smX - dir.x * boomCur,
+        Math.max(0.3, eyeNow + sjoff * 0.45 - dir.y * boomCur + 0.18), // TPP camera follows the hop partially, so the avatar reads against the scene
+        smY - dir.z * boomCur);
       if (gun) gun.visible = false;
     } else if (selfAv) {
       selfAv.visible = false;
+      boomCur += (0 - boomCur) * Math.min(1, dt * 7);
     }
     if (lean !== 0) {
       /* peek lean: camera slides sideways and rolls slightly. Camera only - the shot
