@@ -191,8 +191,10 @@ server.on('upgrade', (req, sock) => {
       for (const [, c] of room.clients) c.send(JSON.stringify({ t: 'started' }));
     }
     else if (msg.t === 'dir') dv.setDir(me.id, Number(msg.dx) || 0, Number(msg.dy) || 0);
+    else if (msg.t === 'jump') dv.jump(me.id);
     else if (msg.t === 'face') dv.face(me.id, Number(msg.dx) || 0, Number(msg.dy) || 0);
-    else if (msg.t === 'shoot') dv.shoot(me.id);
+    else if (msg.t === 'shoot') dv.shoot(me.id, Number(msg.pitch) || 0);
+    else if (msg.t === 'stance') dv.setStance(me.id, String(msg.stance));
     else if (msg.t === 'respawn') dv.respawn(me.id);
     else if (msg.t === 'debug_floor' && process.env.DENELLI_TEST_HOOK === '1') dv.loadFloor(Math.max(1, Number(msg.n) || 1));
     else if (msg.t === 'debug_teleport' && process.env.DENELLI_TEST_HOOK === '1' && me) dv.teleport(me.id, Number(msg.x) || 0, Number(msg.y) || 0);
