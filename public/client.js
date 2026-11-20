@@ -1302,11 +1302,11 @@ async function initLobbyScene() {
     });
   }
   const MAXLOBBYCHARS = 6;
-  function lobbySpot(i, n) {  // arc behind center, own char at 0
+  function lobbySpot(i, n) {  // arc behind center, own char at 0; wide enough that silhouettes never overlap
     if (i === 0) return { x: 0, z: 0, ry: 0 };
     const k = i - 1, spread = Math.min(n - 1, 5);
-    const a = spread === 1 ? 0 : (k / (spread - 1) - 0.5) * 1.5;
-    return { x: Math.sin(a) * 2.1, z: -1.1 + Math.abs(Math.cos(a)) * 0.0 - 0.15, ry: -a * 0.55 };
+    const a = spread === 1 ? 0.55 : (k / (spread - 1) - 0.5) * 2.0;
+    return { x: Math.sin(a) * 2.9, z: -1.15 - Math.abs(a) * 0.35, ry: -a * 0.5 };
   }
   function syncLobbyChars(n) {
     if (!tmpls) return;
