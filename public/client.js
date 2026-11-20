@@ -1136,8 +1136,8 @@ async function initLobbyScene() {
   r.shadowMap.type = THREE.PCFSoftShadowMap;
   lobby3d.r = r;
   const sc = new THREE.Scene();
-  sc.background = new THREE.Color(0x11141f);
-  sc.fog = new THREE.Fog(0x14101d, 9, 46);
+  sc.background = new THREE.Color(0x181c2a);
+  sc.fog = new THREE.Fog(0x1c1626, 9, 46);
   const cam = new THREE.PerspectiveCamera(38, 2, 0.1, 120);
 
   /* dusk sky dome: deep indigo overhead, warm amber band at the horizon */
@@ -1157,8 +1157,8 @@ async function initLobbyScene() {
 
   /* lighting: cool dusk fill + low warm sun, long shadows; warm front key so the
      characters read clearly against the dark apron (reference: lit hero on dark set) */
-  sc.add(new THREE.HemisphereLight(0x44527a, 0x241c14, 1.15));
-  const sun = new THREE.DirectionalLight(0xffb066, 1.6);
+  sc.add(new THREE.HemisphereLight(0x56648c, 0x33291e, 1.6));
+  const sun = new THREE.DirectionalLight(0xffb066, 1.7);
   sun.position.set(-9, 5.5, -7);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
@@ -1169,8 +1169,8 @@ async function initLobbyScene() {
   const rim = new THREE.DirectionalLight(0x5a76b8, 0.5);
   rim.position.set(6, 4, 8);
   sc.add(rim);
-  const key = new THREE.SpotLight(0xffd9a8, 2.2, 18, 0.62, 0.55, 1.2);
-  key.position.set(1.8, 3.6, 4.8);
+  const key = new THREE.SpotLight(0xffd9a8, 3.4, 20, 0.68, 0.6, 1.1);
+  key.position.set(1.8, 3.8, 4.8);
   key.target.position.set(0, 1.0, -0.3);
   sc.add(key, key.target);
 
@@ -1178,7 +1178,7 @@ async function initLobbyScene() {
   {
     const c = document.createElement('canvas'); c.width = 512; c.height = 512;
     const x = c.getContext('2d');
-    x.fillStyle = '#232429'; x.fillRect(0, 0, 512, 512);
+    x.fillStyle = '#2b2c33'; x.fillRect(0, 0, 512, 512);
     let s = 91; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
     for (let i = 0; i < 1600; i++) {
       x.fillStyle = rnd() < 0.5 ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.05)';
@@ -1213,8 +1213,8 @@ async function initLobbyScene() {
 
   /* backdrop silhouettes: small terminal block + control tower with red beacon,
      broadleaf trees; fictional stylized airport, all original geometry */
-  const dark = new THREE.MeshLambertMaterial({ color: 0x1b1e26 });
-  const dark2 = new THREE.MeshLambertMaterial({ color: 0x232733 });
+  const dark = new THREE.MeshLambertMaterial({ color: 0x272b36 });
+  const dark2 = new THREE.MeshLambertMaterial({ color: 0x313748 });
   function box(w, h, d, x2, y2, z2, mat) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat || dark);
     m.position.set(x2, y2, z2); m.castShadow = true; sc.add(m); return m;
@@ -1338,10 +1338,13 @@ async function initLobbyScene() {
       r.setSize(w, h, false);
       cam.aspect = w / h; cam.updateProjectionMatrix();
     }
-    // slow camera drift around the team, eye height near chest
+    // slow camera drift around the team, eye height near chest; portrait pulls back
+    // and aims higher so feet stay clear of the START button zone
     const ca = Math.sin(t * 0.16) * 0.42;
-    cam.position.set(Math.sin(ca) * 4.6, 1.62 + Math.sin(t * 0.23) * 0.07, Math.cos(ca) * 4.6);
-    cam.lookAt(0, 0.98, -0.3);
+    const dist = cam.aspect < 1 ? 6.0 : 4.6;
+    const aimY = cam.aspect < 1 ? 1.08 : 0.98;
+    cam.position.set(Math.sin(ca) * dist, 1.62 + Math.sin(t * 0.23) * 0.07, Math.cos(ca) * dist);
+    cam.lookAt(0, aimY, -0.3);
     // idle sway: breathing bob + tiny turn, no skeletal animation available
     charGroup.children.forEach((o) => {
       o.position.y = Math.sin(t * 1.5 + o.userData.ph) * 0.012;
