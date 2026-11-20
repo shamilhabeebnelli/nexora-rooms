@@ -8,8 +8,39 @@
 <meta name="theme-color" content="#6b4fd8">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
+<style>
+/* First paint is landscape-only, including the opening menu and splash. */
+#nexora-orientation-gate { display:none; position:fixed; inset:0; z-index:10000; background:#0b100d; color:#f0e6cb; align-items:center; justify-content:center; padding:24px; text-align:center; font-family:system-ui,sans-serif; }
+#nexora-orientation-gate .orientation-card { max-width:340px; }
+#nexora-orientation-gate svg { width:104px; height:104px; color:#d4b368; }
+#nexora-orientation-gate h1 { font-size:26px; letter-spacing:3px; margin:16px 0 8px; }
+#nexora-orientation-gate p { font-size:15px; line-height:1.5; color:#bbb8a8; }
+#nexora-orientation-gate button { padding:14px 20px; margin:10px 0; border:1px solid #c5a15c; border-radius:7px; color:#f5e9ce; background:#353b29; font:600 14px system-ui; }
+#nexora-orientation-status { min-height:64px; font-size:12px!important; }
+@media (orientation:portrait) {
+  #nexora-orientation-gate { display:flex; }
+  body > :not(#nexora-orientation-gate):not(script):not(style) { visibility:hidden!important; pointer-events:none!important; }
+}
+@media (orientation:landscape) and (max-height:430px) {
+  .nelli-join .nelli-card { padding:8px 22px; column-gap:14px; }
+  .nelli-join .nelli-card > .nelli-title { font-size:22px; }
+  .nelli-join .nelli-card > .nelli-sub { margin:3px 0 6px; }
+  .nelli-join .nelli-name { padding:6px 10px; margin-bottom:5px; }
+  .nelli-join .nelli-play { padding:8px 14px; }
+}
+</style>
 </head>
 <body class="nelli-shell">
+<section id="nexora-orientation-gate" role="dialog" aria-modal="true" aria-labelledby="nexora-orientation-title">
+  <div class="orientation-card">
+    <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-width="4" aria-hidden="true"><rect x="22" y="35" width="76" height="48" rx="8"/><path d="M32 45v28M88 55v8M24 22c22-15 54-10 69 10m-4-16 6 18-19-2M96 98c-22 15-54 10-69-10m4 16-6-18 19 2"/></svg>
+    <h1 id="nexora-orientation-title">NEXORA</h1>
+    <p>Turn your phone sideways</p>
+    <p>The opening menu and the full game use landscape.</p>
+    <button id="nexora-enter-landscape" type="button">OPEN IN LANDSCAPE</button>
+    <p id="nexora-orientation-status" role="status">If your browser cannot rotate automatically, turn your phone and allow screen rotation.</p>
+  </div>
+</section>
 <canvas id="denelli-arena" class="nelli-arena"></canvas>
 
 <!-- startup splash: original N mark, plays once then fades (never blocks input) -->
@@ -140,6 +171,56 @@
   </div>
 </div>
 <div id="nelli-crosshair" class="nelli-hidden"></div>
+<script>
+(() => {
+  const portrait = matchMedia('(orientation: portrait)');
+  const gate = document.getElementById('nexora-orientation-gate');
+  const button = document.getElementById('nexora-enter-landscape');
+  const status = document.getElementById('nexora-orientation-status');
+  let restoreFocus = null;
+  function sync() {
+    if (portrait.matches) {
+      if (document.activeElement && !gate.contains(document.activeElement)) restoreFocus = document.activeElement;
+      // Clear held gameplay input when a player rotates out of landscape.
+      window.dispatchEvent(new Event('blur'));
+      gate.setAttribute('aria-hidden', 'false');
+      button.focus({preventScroll:true});
+    } else {
+      gate.setAttribute('aria-hidden', 'true');
+      if (restoreFocus && restoreFocus.isConnected) restoreFocus.focus({preventScroll:true});
+    }
+  }
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    status.textContent = 'Opening landscape. If the phone stays upright, turn it sideways.';
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        try { await document.documentElement.requestFullscreen(); } catch (e) {}
+      }
+      if (screen.orientation && typeof screen.orientation.lock === 'function') {
+        try { await screen.orientation.lock('landscape'); } catch (e) {}
+      }
+    } finally {
+      button.disabled = false;
+      if (portrait.matches) status.textContent = 'This browser did not rotate the screen. Turn your phone sideways and allow screen rotation to continue.';
+      sync();
+    }
+  });
+  // A portrait game cannot consume movement keys or activate hidden menu buttons.
+  window.addEventListener('keydown', e => {
+    if (portrait.matches && !gate.contains(e.target)) {e.preventDefault();e.stopImmediatePropagation();button.focus();}
+  }, true);
+  window.addEventListener('resize', sync);
+  document.addEventListener('fullscreenchange', sync);
+  if (portrait.addEventListener) portrait.addEventListener('change', sync);
+  else portrait.addListener(sync);
+  // Best effort only. Browsers may require the explicit tap/fullscreen above.
+  if (screen.orientation && typeof screen.orientation.lock === 'function') {
+    try { const result = screen.orientation.lock('landscape'); if (result && result.catch) result.catch(() => {}); } catch(e) {}
+  }
+  sync();
+})();
+</script>
 <script src="sfx.js"></script>
 <script src="kondotty-map.js"></script>
 <script src="core.js"></script>
