@@ -1,10 +1,10 @@
 {
   "name": "NEXORA",
   "short_name": "NEXORA",
-  "description": "Same-WiFi multiplayer roguelike dungeon crawler",
+  "description": "Online multiplayer shooter with team codes. Landscape play.",
   "start_url": "./index.html",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "landscape",
   "background_color": "#0a0a0f",
   "theme_color": "#6b4fd8",
   "icons": [
