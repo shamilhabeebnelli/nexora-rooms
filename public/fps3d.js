@@ -681,8 +681,11 @@
     if (stX === null || me.x !== stX || me.y !== stY) {
       const dtt = stT ? Math.max(0.05, (nowMs - stT) / 1000) : 0.1;
       if (stX !== null) { stVx = (me.x - stX) / dtt; stVy = (me.y - stY) / dtt; }
+      if (stX !== null && Math.hypot(me.x - stX, me.y - stY) > 3) {
+        stVx = stVy = 0; smX = me.x * TILE; smY = me.y * TILE;
+      }
       stX = me.x; stY = me.y; stT = nowMs;
-    }
+    } else if (nowMs - stT > 160) { stVx = stVy = 0; }
     {
       const age = Math.min(0.12, (nowMs - stT) / 1000);
       const tx = (me.x + stVx * age) * TILE, ty = (me.y + stVy * age) * TILE;
