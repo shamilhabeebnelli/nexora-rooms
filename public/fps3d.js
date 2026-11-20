@@ -680,7 +680,11 @@
     /* velocity extrapolation from the last snapshot change, capped small */
     if (stX === null || me.x !== stX || me.y !== stY) {
       const dtt = stT ? Math.max(0.05, (nowMs - stT) / 1000) : 0.1;
-      if (stX !== null) { stVx = (me.x - stX) / dtt; stVy = (me.y - stY) / dtt; }
+      if (stX !== null) {
+        stVx = (me.x - stX) / dtt; stVy = (me.y - stY) / dtt;
+        const speed = Math.hypot(stVx, stVy), maxSpeed = 4 / TILE;
+        if (speed > maxSpeed) { stVx *= maxSpeed / speed; stVy *= maxSpeed / speed; }
+      }
       if (stX !== null && Math.hypot(me.x - stX, me.y - stY) > 3) {
         stVx = stVy = 0; smX = me.x * TILE; smY = me.y * TILE;
       }
