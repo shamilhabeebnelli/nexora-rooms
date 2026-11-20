@@ -305,14 +305,16 @@
       try {
         const { GLTFLoader } = await import('./GLTFLoader.js');
         const loader = new GLTFLoader();
-        const [ga, gb] = await Promise.all([
+        const [ga, gb, gap, gbp] = await Promise.all([
           new Promise((res, rej) => loader.load('./charA.glb', res, undefined, rej)),
           new Promise((res, rej) => loader.load('./charB.glb', res, undefined, rej)),
+          new Promise((res, rej) => loader.load('./charA-prone.glb', res, undefined, rej)), // arms rotated forward in mesh: the model has no bones, so the prone pose is a separate mesh variant, not a joint pose
+          new Promise((res, rej) => loader.load('./charB-prone.glb', res, undefined, rej)),
         ]);
-        for (const g of [ga, gb]) {
+        for (const g of [ga, gb, gap, gbp]) {
           g.scene.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; } });
         }
-        charTmpls = { A: ga.scene, B: gb.scene };
+        charTmpls = { A: ga.scene, B: gb.scene, AP: gap.scene, BP: gbp.scene };
       } catch (ce) { charTmpls = null; console.log('char load failed, capsule fallback:', ce && ce.message); }
       ready = true;
       window.__fpsDebug = { scene: () => scene, othersGroup: () => othersGroup, avatars, tmpls: () => charTmpls, cam: () => cam, self: () => selfAv, tileAt: (x, z) => (dbgSt ? tileCodeAt(dbgSt, x, z) : -1), info: () => renderer.info.render };
@@ -476,8 +478,13 @@
       if (!av) {
         let obj;
         if (charTmpls) {
-          const src = ((o.hu || 0) % 2 === 0) ? charTmpls.A : charTmpls.B;
-          obj = src.clone(true);
+          const even = ((o.hu || 0) % 2 === 0);
+          const up = (even ? charTmpls.A : charTmpls.B).clone(true);
+          const pr = (even ? charTmpls.AP : charTmpls.BP).clone(true);
+          pr.rotation.x = Math.PI / 2; // face-down, head toward facing; arms (mesh-rotated forward) lie flat ahead
+          pr.position.y = 0.22;
+          pr.visible = false;
+          obj = new THREE.Group(); obj.add(up); obj.add(pr); obj.userData.up = up; obj.userData.pr = pr;
           const shift = (((o.hu || 0) * 36) % 360) / 360 * 0.18 - 0.09;
           obj.traverse((m) => {
             if (m.isMesh && /shirt|pants/.test(m.material && m.material.name || '')) {
@@ -506,12 +513,14 @@
       const fx = (o.f && o.f[0]) || 0, fy = (o.f && o.f[1]) || 0;
       if (fx || fy) g.rotation.y = Math.atan2(fx, fy);
       g.scale.set(1, 1, 1);
+      const showProne = !o.dead && o.st === 'prone' && g.userData.pr;
+      if (g.userData.up) { g.userData.up.visible = !showProne; g.userData.pr.visible = !!showProne; }
       if (o.dead) {
         g.rotation.x = -Math.PI / 2;
         g.position.y = 0.15;
       } else if (o.st === 'prone') {
-        g.rotation.x = -Math.PI / 2; // fully flat, face-down: no bones in the model, so the whole body lies on the ground plane and the arms lie flat instead of tipping upward
-        g.position.y = 0.12;
+        g.rotation.x = 0; // the prone child carries its own flat rotation
+        g.position.y = 0;
         g.rotation.z = 0;
       } else if (o.st === 'crouch') {
         g.rotation.x = 0;
@@ -572,7 +581,13 @@
       if (m === 'tpp' && !selfAv) {
         const THREE = window.__THREE;
         if (charTmpls) {
-          selfAv = charTmpls.A.clone(true);
+          const up = charTmpls.A.clone(true);
+          const pr = charTmpls.AP.clone(true);
+          pr.rotation.x = Math.PI / 2;
+          pr.position.y = 0.22;
+          pr.visible = false;
+          selfAv = new THREE.Group(); selfAv.add(up); selfAv.add(pr);
+          selfAv.userData.up = up; selfAv.userData.pr = pr;
         } else {
           const cap = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 1.05, 4, 10),
             new THREE.MeshLambertMaterial({ color: 0xc9a35a }));
@@ -655,7 +670,9 @@
       selfAv.position.set(me.x * TILE, 0.03 + sjoff + (smoved > 0.002 ? Math.abs(Math.sin(selfPhase)) * 0.05 : 0), me.y * TILE);
       selfAv.rotation.y = Math.atan2(Math.sin(yaw), -Math.cos(yaw)); // same facing convention as other avatars: map forward (sin yaw, -cos yaw)
       selfAv.scale.set(1, 1, 1); selfAv.rotation.x = 0;
-      if (me.st === 'prone') { selfAv.rotation.x = -Math.PI / 2; selfAv.position.y = 0.12 + sjoff * 0.45; }
+      const selfProne = me.st === 'prone' && selfAv.userData.pr;
+      if (selfAv.userData.up) { selfAv.userData.up.visible = !selfProne; selfAv.userData.pr.visible = !!selfProne; }
+      if (me.st === 'prone') { selfAv.position.y = sjoff * 0.45; }
       else if (me.st === 'crouch') selfAv.scale.set(1, 0.72, 1);
       // boom: pull camera back along its own -forward, clamp before walls
       const THREE = window.__THREE;
