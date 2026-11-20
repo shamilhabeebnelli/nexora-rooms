@@ -29,6 +29,7 @@ const SNAP_MS = 100;   // 10 Hz snapshots
 
 /* rooms: friends join the same game with a short room code; no code
    lands in the shared main hall. An empty custom room closes itself. */
+const RESUME_GRACE_MS = 5 * 60 * 1000; // same live match, not permanent score storage
 const rooms = new Map(); // code -> { code, delve, clients }
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no look-alikes
 function newCode() {
@@ -46,7 +47,7 @@ function roomFor(code) {
   let r = rooms.get(code);
   if (!r) {
     r = { code, delve: new DenelliDelve(((Date.now() ^ 0x5eed) + rooms.size * 7919) >>> 0), clients: new Map(),
-      phase: 'lobby', hostId: null }; // lobby first: host starts the match from the lobby
+      phase: 'lobby', hostId: null, sessions: new Map() }; // lobby first: host starts the match from the lobby
     rooms.set(code, r);
   }
   return r;
@@ -160,7 +161,21 @@ server.on('upgrade', (req, sock) => {
     let msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
     if (!me) {
-      if (msg.t === 'create') {
+      let resumed = false;
+      if (msg.t === 'resume') {
+        room = rooms.get(cleanCode(msg.room));
+        const saved = room && room.sessions.get(String(msg.token || ''));
+        if (!saved || (saved.disconnectedAt && Date.now() - saved.disconnectedAt > RESUME_GRACE_MS) || !room.delve.players.has(saved.id)) {
+          ws.send(JSON.stringify({t:'error',code:'session_expired',msg:'The previous match session is no longer available. Join a current team to start again.'}));
+          return;
+        }
+        me = room.delve.players.get(saved.id);
+        const previous = room.clients.get(me.id);
+        // Publish replacement before closing the old socket: its close cannot remove us.
+        room.clients.set(me.id, ws);
+        if (previous && previous !== ws) previous.close();
+        saved.disconnectedAt = 0; resumed = true;
+      } else if (msg.t === 'create') {
         // online flow: server picks the code, creator joins as first player
         room = roomFor(newCode());
       } else if (msg.t === 'join') {
@@ -174,11 +189,17 @@ server.on('upgrade', (req, sock) => {
       const dv = room.delve;
       const tgt = Math.max(0, Math.min(999, Number(msg.target) || 0));
       if (tgt && !dv.motm) dv.targetKills = tgt; // players choose the kill target; locked once MoM is crowned
-      me = dv.addPlayer(msg.name);
+      if (!resumed) {
+        me = dv.addPlayer(msg.name);
+        me.resumeToken = crypto.randomBytes(24).toString('hex');
+        room.sessions.set(me.resumeToken, {id:me.id,disconnectedAt:0});
+      }
+      me.connected = true; me.dir = null;
       if (!room.hostId) room.hostId = me.id; // first in becomes the lobby host
       room.clients.set(me.id, ws);
       ws.send(JSON.stringify({
         t: 'welcome', id: me.id, floor: dv.floor, room: room.code,
+        token: me.resumeToken, resumed,
         w: dv.map.w, h: dv.map.h, seed: (dv.seedBase + dv.floor * 7919) >>> 0,
         phase: room.phase, hostId: room.hostId, members: rosterOf(room),
       }));
@@ -186,6 +207,8 @@ server.on('upgrade', (req, sock) => {
       return;
     }
     const dv = room.delve;
+    if (room.clients.get(me.id) !== ws) return;
+    if (msg.t === 'ping') { ws.send(JSON.stringify({t:'pong'})); return; }
     if (msg.t === 'start' && room.phase === 'lobby' && room.hostId === me.id) {
       room.phase = 'playing';
       for (const [, c] of room.clients) c.send(JSON.stringify({ t: 'started' }));
@@ -201,15 +224,19 @@ server.on('upgrade', (req, sock) => {
   };
   ws.onclose = () => {
     if (me && room) {
-      room.delve.removePlayer(me.id); room.clients.delete(me.id);
-      if (room.hostId === me.id) room.hostId = room.clients.keys().next().value || null; // host handoff
+      if (room.clients.get(me.id) !== ws) return;
+      me.dir = null; me.connected = false;
+      room.clients.delete(me.id);
+      const saved = room.sessions.get(me.resumeToken);
+      if (saved) saved.disconnectedAt = Date.now();
+      if (room.hostId === me.id) room.hostId = room.clients.keys().next().value || null; // active host handoff
       if (room.phase === 'lobby') broadcastRoster(room);
     }
   };
 });
 
 function rosterOf(r) {
-  return [...r.delve.players.values()].map((p) => ({ id: p.id, name: p.name }));
+  return [...r.delve.players.values()].map((p) => ({ id: p.id, name: p.connected === false ? p.name + ' (reconnecting)' : p.name }));
 }
 function broadcastRoster(r) {
   if (r.phase !== 'lobby') return;
@@ -220,6 +247,12 @@ function broadcastRoster(r) {
 setInterval(() => { for (const r of rooms.values()) if (r.phase === 'playing') r.delve.tick(); }, TICK_MS);
 setInterval(() => {
   for (const [code, r] of rooms) {
+    for (const [token, saved] of r.sessions) {
+      if (saved.disconnectedAt && Date.now() - saved.disconnectedAt > RESUME_GRACE_MS) {
+        r.delve.removePlayer(saved.id); r.sessions.delete(token);
+        if (r.phase === 'lobby') broadcastRoster(r);
+      }
+    }
     if (r.clients.size === 0) {
       r.delve.drainEvents();
       if (code !== '' && r.delve.players.size === 0) rooms.delete(code); // empty custom rooms close
