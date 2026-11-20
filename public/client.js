@@ -141,69 +141,96 @@ function serverUrl() {
   }
   return SERVER_URL_DEFAULT;
 }
-function connectOnline(name, mode) { // mode: 'create' | 'join'
-  const room = mode === 'join' ? (roomIn && roomIn.value || '').trim().toUpperCase() : '';
+const SESSION_KEY = 'nexora-active-match-v1';
+let onlineSession = null, reconnectTimer = null, reconnectAttempts = 0, heartbeatTimer = null;
+const reconnectNotice = document.createElement('div');
+reconnectNotice.id = 'nexora-reconnect-status';
+reconnectNotice.setAttribute('role','status');
+Object.assign(reconnectNotice.style,{display:'none',position:'fixed',top:'52px',left:'50%',transform:'translateX(-50%)',zIndex:'100',padding:'10px 16px',maxWidth:'88vw',background:'#151e15',color:'#f0dfad',border:'1px solid #c2a362',borderRadius:'7px',font:'13px system-ui',textAlign:'center'});
+document.body.append(reconnectNotice);
+function resumeStatus(text) { reconnectNotice.textContent = text; reconnectNotice.style.display = text ? 'block' : 'none'; }
+function saveSession(value) {
+  onlineSession = value;
+  try { if(value) sessionStorage.setItem(SESSION_KEY,JSON.stringify(value)); else sessionStorage.removeItem(SESSION_KEY); } catch(e) {}
+}
+function stopReconnect() { clearTimeout(reconnectTimer); reconnectTimer=null; clearInterval(heartbeatTimer); }
+function queueReconnect() {
+  if (!onlineSession || reconnectTimer) return;
+  if (reconnectAttempts >= 18) {
+    resumeStatus('Still disconnected. Restore your connection and reload to try resuming this match.');
+    return;
+  }
+  const delay = Math.min(8000, 500 * Math.pow(2, Math.min(reconnectAttempts,4)));
+  reconnectAttempts++;
+  resumeStatus('Connection interrupted. Reconnecting to your match, keeping your score...');
+  reconnectTimer=setTimeout(()=>{reconnectTimer=null;connectOnline(onlineSession.name,'resume');},delay);
+}
+function connectOnline(name, mode) { // create/join starts a new identity; resume needs its private token
+  const room = mode === 'resume' ? onlineSession && onlineSession.room : mode === 'join' ? (roomIn && roomIn.value || '').trim().toUpperCase() : '';
+  if (mode === 'resume' && !onlineSession) return;
   if (mode === 'join' && room.length < 4) { joinErr.textContent = 'enter the 4-letter team code from your friend'; return; }
-  joinBox.classList.remove('nelli-hidden');
-  joinErr.textContent = 'connecting to game server…';
-  const ws = new WebSocket(serverUrl());
-  S.ws = ws;
-  let welcomed = false, opened = false;
-  const wakeTimer = setTimeout(() => {
-    if (!welcomed) joinErr.textContent = 'game server is waking up - first start can take up to a minute…';
-  }, 6000);
-  const failTimer = setTimeout(() => {
-    if (!welcomed) {
-      try { ws.close(); } catch (e) {}
-      joinErr.textContent = 'server unreachable - check internet and try again';
-    }
-  }, 75000);
-  ws.onopen = () => {
-    opened = true;
-    joinErr.textContent = mode === 'create' ? 'creating team…' : `finding team ${room}…`;
-    ws.send(JSON.stringify(mode === 'create'
-      ? { t: 'create', name, target: chosenTarget() }
-      : { t: 'join', name, target: chosenTarget(), room }));
+  stopReconnect();
+  if (mode !== 'resume') {
+    saveSession(null); reconnectAttempts=0; resumeStatus('');
+    joinBox.classList.remove('nelli-hidden'); joinErr.textContent='connecting to game server…';
+  }
+  const previous=S.ws;
+  const ws = new WebSocket(serverUrl()); S.ws=ws;
+  if (previous && previous!==ws) { previous.onclose=null; try{previous.close();}catch(e){} }
+  let welcomed=false, lastMessage=Date.now(), terminal=false;
+  const wakeTimer=setTimeout(()=>{if(!welcomed&&mode!=='resume')joinErr.textContent='game server is waking up - first start can take up to a minute…';},6000);
+  const failTimer=setTimeout(()=>{if(!welcomed){try{ws.close();}catch(e){}}},mode==='resume'?12000:75000);
+  ws.onopen=()=>{
+    if(S.ws!==ws)return;
+    const message=mode==='resume'?{t:'resume',room,token:onlineSession.token}:mode==='create'?{t:'create',name,target:chosenTarget()}:{t:'join',name,target:chosenTarget(),room};
+    ws.send(JSON.stringify(message));
+    clearInterval(heartbeatTimer);
+    heartbeatTimer=setInterval(()=>{
+      if(S.ws!==ws)return;
+      if(Date.now()-lastMessage>20000){try{ws.close();}catch(e){}return;}
+      if(ws.readyState===1)ws.send(JSON.stringify({t:'ping'}));
+    },5000);
   };
-  ws.onmessage = (m) => {
-    let msg;
-    try { msg = JSON.parse(m.data); } catch (e) { return; }
-    if (msg.t === 'welcome') {
-      welcomed = true;
-      clearTimeout(wakeTimer); clearTimeout(failTimer);
-      S.room = msg.room || '';
-      S.mode = 'online';
-      S.myId = msg.id;
-      if (msg.phase === 'lobby') { enterLobby(msg); return; }
-      startPlay(S.room ? `online team · code ${S.room}` : 'online team');
-      if (S.room) { pushFeed(`team code ${S.room} - friends join with this code`); showTeamCard(S.room); }
-    } else if (msg.t === 'lobby') {
-      updateLobby(msg);
-    } else if (msg.t === 'started') {
-      beginMatch();
-    } else if (msg.t === 'error') {
-      clearTimeout(wakeTimer); clearTimeout(failTimer);
-      joinErr.textContent = msg.msg || 'could not join - try again';
-      joinBox.classList.remove('nelli-hidden');
-      try { ws.close(); } catch (e) {}
-    } else if (msg.t === 'state') applyState(msg);
+  ws.onmessage=(m)=>{
+    if(S.ws!==ws)return;lastMessage=Date.now();
+    let msg;try{msg=JSON.parse(m.data);}catch(e){return;}
+    if(msg.t==='welcome'){
+      welcomed=true;clearTimeout(wakeTimer);clearTimeout(failTimer);reconnectAttempts=0;resumeStatus('');
+      const alreadyPlaying=S.joined&&S.state&&S.myId===msg.id;
+      S.room=msg.room||'';S.mode='online';S.myId=msg.id;
+      if(msg.token)saveSession({room:S.room,token:msg.token,name});
+      joinBox.classList.add('nelli-hidden');
+      if(msg.phase==='lobby'){enterLobby(msg);return;}
+      if(alreadyPlaying){lobbyBox.classList.add('nelli-hidden');pushFeed('reconnected to the same match');}
+      else startPlay(S.room?'online team · code '+S.room:'online team');
+      if(S.room&&!msg.resumed){pushFeed('team code '+S.room+' - friends join with this code');showTeamCard(S.room);}
+    }else if(msg.t==='lobby')updateLobby(msg);
+    else if(msg.t==='started')beginMatch();
+    else if(msg.t==='error'){
+      terminal=true;stopReconnect();clearTimeout(wakeTimer);clearTimeout(failTimer);
+      if(msg.code==='session_expired')saveSession(null);
+      resumeStatus('');joinErr.textContent=msg.msg||'could not join - try again';
+      joinBox.classList.remove('nelli-hidden');lobbyBox.classList.add('nelli-hidden');
+      S.mode=null;try{ws.close();}catch(e){}
+    }else if(msg.t==='state')applyState(msg);
   };
-  ws.onerror = () => {
-    if (!welcomed) joinErr.textContent = opened
-      ? 'connection error after reaching the server - try again'
-      : 'cannot reach the game server - is the internet on?';
-  };
-  ws.onclose = () => {
-    clearTimeout(wakeTimer); clearTimeout(failTimer);
-    if (!welcomed) { joinBox.classList.remove('nelli-hidden'); return; }
-    if (S.mode === 'online') {
-      pushFeed('lost connection to the server');
-      joinErr.textContent = 'server connection lost - rejoin with the same team code';
-      joinBox.classList.remove('nelli-hidden');
-      S.mode = null;
-    }
+  ws.onerror=()=>{if(S.ws===ws&&!welcomed&&mode!=='resume')joinErr.textContent='cannot reach the game server - check your connection';};
+  ws.onclose=()=>{
+    clearTimeout(wakeTimer);clearTimeout(failTimer);
+    if(S.ws!==ws)return;clearInterval(heartbeatTimer);
+    if(terminal)return;
+    if(onlineSession){
+      // Do not erase the current score or return to Join Team for a temporary drop.
+      resetHeldInput();S.mode='reconnecting';queueReconnect();
+    }else{joinErr.textContent='server unreachable - check internet and try again';joinBox.classList.remove('nelli-hidden');}
   };
 }
+window.addEventListener('online',()=>{if(onlineSession&&S.mode==='reconnecting'){reconnectAttempts=0;clearTimeout(reconnectTimer);reconnectTimer=null;queueReconnect();}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&onlineSession&&(!S.ws||S.ws.readyState>1)){reconnectAttempts=0;queueReconnect();}});
+// sessionStorage is tab-scoped: it survives reload without identifying another player by name.
+setTimeout(()=>{
+  try{const saved=JSON.parse(sessionStorage.getItem(SESSION_KEY)||'null');if(saved&&typeof saved.token==='string'&&typeof saved.room==='string'){onlineSession=saved;resumeStatus('Resuming your previous match...');connectOnline(saved.name||'player','resume');}}catch(e){}
+},0);
 
 /* ---------------- LAN mode ---------------- */
 function connectLan(name) {
