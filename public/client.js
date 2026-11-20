@@ -422,11 +422,10 @@ function rotateByYaw(dx, dy) {
   const rx = Math.cos(yaw), ry = Math.sin(yaw);    // strafe right
   const mx = fx * (-dy) + rx * dx;
   const my = fy * (-dy) + ry * dx;
-  return Math.abs(mx) >= Math.abs(my) ? [Math.sign(mx) || 0, 0] : [0, Math.sign(my) || 0];
+  return [mx, my];
 }
 function aimThen(fn) {
   if (!window.NelliFps || !NelliFps.ready || (S.mode !== 'lan' && S.mode !== 'online')) { fn(); return; }
-  if (curMoveDir && (curMoveDir[0] || curMoveDir[1])) { fn(); return; } // moving: facing already tracks travel
   /* free horizontal aim: the crosshair yaw IS the shot direction (exact unit vector).
      vertical has no ballistics - fire stays in the map plane regardless of pitch. */
   const yaw = NelliFps.yaw;
@@ -445,11 +444,34 @@ const keys = {};
 const DIRS = { ArrowUp: [0, -1], w: [0, -1], W: [0, -1], ArrowDown: [0, 1], s: [0, 1], S: [0, 1],
                ArrowLeft: [-1, 0], a: [-1, 0], A: [-1, 0], ArrowRight: [1, 0], d: [1, 0], D: [1, 0] };
 function keyDir() {
-  for (const k of ['ArrowUp', 'w', 'W', 'ArrowDown', 's', 'S', 'ArrowLeft', 'a', 'A', 'ArrowRight', 'd', 'D']) {
-    if (keys[k]) return DIRS[k];
-  }
-  return null;
+  const dx = Number(!!(keys.ArrowRight || keys.d || keys.D)) - Number(!!(keys.ArrowLeft || keys.a || keys.A));
+  const dy = Number(!!(keys.ArrowDown || keys.s || keys.S)) - Number(!!(keys.ArrowUp || keys.w || keys.W));
+  const n = Math.max(1, Math.hypot(dx, dy));
+  return dx || dy ? [dx / n, dy / n] : null;
 }
+let localMove = [0, 0];
+function setLocalMove(dx, dy) {
+  localMove = [dx, dy];
+  const r = rotateByYaw(dx, dy); sendDir(r[0], r[1]);
+}
+// Refresh a held stick/key so the server can expire lost release events safely.
+setInterval(() => {
+  if (!S.joined || document.hidden) return;
+  if (localMove[0] || localMove[1]) setLocalMove(localMove[0], localMove[1]);
+  if (window.NelliFps && NelliFps.ready) {
+    const dx = Math.sin(NelliFps.yaw), dy = -Math.cos(NelliFps.yaw);
+    if (!wsSend({t:'face', dx, dy}) && S.delve) S.delve.face(S.myId, dx, dy);
+  }
+}, 100);
+function resetHeldInput() {
+  Object.keys(keys).forEach(k => delete keys[k]);
+  stickTouch = null; knob.style.transform = 'translate(0px, 0px)';
+  setLocalMove(0, 0);
+  if (window.NelliFps && NelliFps.ready) { NelliFps.setLean(0); NelliFps.setAds(false); }
+}
+addEventListener('blur', resetHeldInput);
+addEventListener('pagehide', resetHeldInput);
+document.addEventListener('visibilitychange', () => { if (document.hidden) resetHeldInput(); });
 addEventListener('keydown', (e) => {
   if (!S.joined) return;
   if (e.key === ' ') { e.preventDefault(); sendShoot(); return; }
@@ -463,7 +485,7 @@ addEventListener('keydown', (e) => {
     e.preventDefault();
     keys[e.key] = true;
     const d = keyDir();
-    if (d) { const r = rotateByYaw(d[0], d[1]); sendDir(r[0], r[1]); }
+    if (d) setLocalMove(d[0], d[1]);
   }
 });
 addEventListener('keyup', (e) => {
@@ -471,11 +493,10 @@ addEventListener('keyup', (e) => {
   if (DIRS[e.key] === undefined) return;
   keys[e.key] = false;
   const d = keyDir();
-  const r = d ? rotateByYaw(d[0], d[1]) : [0, 0];
-  sendDir(r[0], r[1]);
+  setLocalMove(d ? d[0] : 0, d ? d[1] : 0);
 });
 
-/* touch joystick: dominant axis */
+/* Analog touch joystick in camera-relative coordinates. */
 let stickTouch = null;
 function stickVec(t, rect) {
   const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
@@ -484,28 +505,28 @@ function stickVec(t, rect) {
   const k = Math.min(mag, 34);
   knob.style.transform = `translate(${(mag ? dx / mag * k : 0)}px, ${(mag ? dy / mag * k : 0)}px)`;
   if (mag < 10) return [0, 0];
-  return Math.abs(dx) > Math.abs(dy) ? [Math.sign(dx), 0] : [0, Math.sign(dy)];
+  const strength = Math.min(1, (mag - 10) / 24);
+  return [dx / mag * strength, dy / mag * strength];
 }
 stick.addEventListener('touchstart', (e) => {
   e.preventDefault();
+  if (stickTouch !== null) return;
   stickTouch = e.changedTouches[0].identifier;
   const v = stickVec(e.changedTouches[0], stick.getBoundingClientRect());
-  const r = rotateByYaw(v[0], v[1]);
-  sendDir(r[0], r[1]);
+  setLocalMove(v[0], v[1]);
 }, { passive: false });
 stick.addEventListener('touchmove', (e) => {
   e.preventDefault();
   for (const t of e.changedTouches) if (t.identifier === stickTouch) {
     const v = stickVec(t, stick.getBoundingClientRect());
-    const r = rotateByYaw(v[0], v[1]);
-    sendDir(r[0], r[1]);
+    setLocalMove(v[0], v[1]);
   }
 }, { passive: false });
 const stickEnd = (e) => {
   for (const t of e.changedTouches) if (t.identifier === stickTouch) {
     stickTouch = null;
     knob.style.transform = 'translate(0px, 0px)';
-    sendDir(0, 0);
+    setLocalMove(0, 0);
   }
 };
 stick.addEventListener('touchend', stickEnd);
