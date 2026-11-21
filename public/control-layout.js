@@ -127,7 +127,7 @@
   const $ = id => document.getElementById(id);
   const oldMini = $('nelli-minimap'), mapButton = $('nelli-mapbtn');
   const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
-  const names = map.rooms.map(r => ({n:r.n,x:r.cx,y:r.cy}));
+  const names = [...map.rooms.map(r => ({n:r.n,x:r.cx,y:r.cy})),...(map.landmarks||[])];
   const terrain = document.createElement('canvas');
   terrain.width=map.w;terrain.height=map.h;
   const tg=terrain.getContext('2d'), palette=['#7c7969','#394b37','#394b37','#394b37','#394b37','#c0b898','#979b8b'];
@@ -188,13 +188,13 @@
     for(let t=0;t<=map.w;t+=32){const [px]=point(t,0);g.beginPath();g.moveTo(px,0);g.lineTo(px,H);g.stroke();}
     for(let t=0;t<=map.h;t+=32){const [,py]=point(0,t);g.beginPath();g.moveTo(0,py);g.lineTo(W,py);g.stroke();}
     const st=state(), you=st&&st.you, near=you&&nearest(you);
-    const order=[...names].sort((a,b)=>{const rank=n=>near&&n.n===near.n?3:n.n==='Kondotty'?2:['Karipur','Kizhissery','Kottappuram'].includes(n.n)?1:0;return rank(b)-rank(a);});
+    const order=[...names].sort((a,b)=>{const rank=n=>near&&n.n===near.n?5:n.n==='Kondotty'?4:n.kind==='airport'?3.8:n.kind==='hospital'?3.5:n.n==='Karipur'?3.4:['Kizhissery','Kottappuram'].includes(n.n)?1:0;return rank(b)-rank(a);});
     const used=[];g.font='600 12px system-ui';g.textAlign='center';g.textBaseline='middle';
     for(const n of order){const [px,py]=point(n.x,n.y);if(px<0||px>W||py<0||py>H)continue;
       g.fillStyle='#dbe8c6';g.beginPath();g.arc(px,py,2,0,7);g.fill();
       const tw=g.measureText(n.n).width+10;let box=null;
-      for(const off of [-18,18,-35,35]){const b={x:px-tw/2,y:py+off-9,w:tw,h:18};if(b.x<3||b.x+b.w>W-3||b.y<3||b.y+b.h>H-3)continue;if(!used.some(a=>b.x<a.x+a.w+3&&b.x+b.w+3>a.x&&b.y<a.y+a.h+2&&b.y+b.h+2>a.y)){box=b;break;}}
-      if(!box)continue;used.push(box);g.strokeStyle='#d1dcaf66';g.beginPath();g.moveTo(px,py);g.lineTo(px,box.y+9);g.stroke();g.fillStyle='#10251eea';g.fillRect(box.x,box.y,box.w,box.h);g.fillStyle=near&&near.n===n.n?'#ffe38b':'#edf2da';g.fillText(n.n,px,box.y+9);
+      const important=n.kind||n.n==='Kondotty'||n.n==='Karipur';const slots=important?[[0,-18],[0,18],[-150,-18],[150,18],[0,-50],[0,50]]:[[0,-18],[0,18],[0,-38],[0,38]];for(const [sx,off] of slots){const b={x:px+sx-tw/2-3,y:py+off-11,w:tw+6,h:22};if(b.x<3||b.x+b.w>W-3||b.y<3||b.y+b.h>H-3)continue;if(!used.some(a=>b.x<a.x+a.w+8&&b.x+b.w+8>a.x&&b.y<a.y+a.h+8&&b.y+b.h+8>a.y)){box=b;break;}}
+      if(!box)continue;used.push(box);g.strokeStyle='#e3eaca99';g.beginPath();g.moveTo(px,py);g.lineTo(box.x+box.w/2,box.y+11);g.stroke();g.fillStyle='#10251eea';g.fillRect(box.x,box.y,box.w,box.h);g.fillStyle=near&&near.n===n.n?'#ffe38b':'#edf2da';g.fillText(n.n,box.x+box.w/2,box.y+11);
     }
     if(st){for(const o of st.others||[]){const p=point(o.x,o.y);marker(g,...p,null,o.dead?'#84928d':'#8ed8ff',4);}marker(g,...point(you.x,you.y),you.f,'#ffdb64',6);}
     g.textAlign='left';g.textBaseline='alphabetic';g.fillStyle='#10251eea';g.fillRect(8,8,39,42);g.fillStyle='#eef2d5';g.font='bold 13px system-ui';g.fillText('N',22,24);g.beginPath();g.moveTo(27,29);g.lineTo(21,42);g.lineTo(33,42);g.closePath();g.fill();
@@ -282,7 +282,7 @@
   'use strict';
   const map=window.KONDOTTY_MAP,helper=window.NexoraApproachLabels;
   if(!map||!helper)return;
-  const logic=helper.create(map.rooms.map(r=>({n:r.n,x:r.cx,y:r.cy})));
+  const logic=helper.create([...map.rooms.map(r=>({n:r.n,x:r.cx,y:r.cy})),...(map.landmarks||[])]);
   const style=document.createElement('style');style.textContent='#nx-place{display:none!important}';document.head.append(style);
   let group=null,current=null,lastRoom=null,lastId=null;
   function remove(){if(!group)return;group.removeFromParent();group.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}});group=null;}
@@ -300,7 +300,7 @@
       const rank=Math.hypot(x-anchor.x,y-anchor.y)+(code===1?0:.5);
       if(rank<best){best=rank;anchor={x:x+uy*.38,y:y-ux*.38};}
     }
-    group=new THREE.Group();group.name='nexora-approach-sign';
+    group=new THREE.Group();group.name='nexora-approach-sign';group.userData.place=label.n;
     const art=document.createElement('canvas');art.width=1024;art.height=320;const g=art.getContext('2d');
     g.fillStyle='#15523b';g.fillRect(0,0,1024,320);g.strokeStyle='#f3f0d9';g.lineWidth=11;g.strokeRect(17,17,990,286);
     g.fillStyle='#f7f5e8';g.textAlign='center';g.textBaseline='middle';let size=100;do{g.font='600 '+size+'px sans-serif';if(g.measureText(label.n).width<870)break;size-=4;}while(size>38);g.fillText(label.n,512,125);
@@ -318,6 +318,14 @@
     const label=logic.update(you.x,you.y);
     if(!label||you.dead){remove();current=null;return;}
     if(current!==label.key||!group){build(label,you);if(group)current=label.key;}
-    if(group)group.visible=!document.hidden&&document.querySelector('#nx-map').hidden;
+    if(group)group.visible=!document.hidden&&!st.riding&&document.querySelector('#nx-map').hidden&&Math.hypot(group.position.x-you.x*1.6,group.position.z-you.y*1.6)>2.2;
   },200);
+})();
+
+/* Shared shuttle: only real room players can board; no NPC driver/passengers. */
+(()=>{
+ const b=document.createElement('button');b.id='nx-bus';b.hidden=true;const hint=document.createElement('div');hint.id='nx-bus-status';hint.hidden=true;document.body.append(b,hint);
+ const css=document.createElement('style');css.textContent='#nx-bus{position:fixed;left:50%;bottom:45px;transform:translateX(-50%);z-index:33;min-height:40px;padding:8px 13px;border:1px solid #ead9a0;border-radius:6px;background:#1c3b32eb;color:#fff1c5;font:12px system-ui}#nx-bus-status{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:33;background:#10251ee0;color:#eee8c8;padding:5px 8px;font:10px system-ui;text-align:center;max-width:60vw}#nx-bus[hidden],#nx-bus-status[hidden]{display:none}body.nx-riding #nelli-stick,body.nx-riding #nelli-shoot,body.nx-riding #nelli-scope,body.nx-riding #nelli-jump,body.nx-riding #nelli-peekl,body.nx-riding #nelli-peekr,body.nx-riding #nelli-crouch,body.nx-riding #nelli-prone{visibility:hidden;pointer-events:none}';document.head.append(css);
+ b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();window.NexoraBusAction?.();});
+ setInterval(()=>{const st=window.__nelliS?.state,bus=st?.bus,on=!!st?.riding,near=bus&&st?.you&&Math.hypot(st.you.x-bus.x,st.you.y-bus.y)<=3;document.body.classList.toggle('nx-riding',on);b.hidden=!(on||(near&&bus.wait>0));b.textContent=on?'LEAVE BUS':'BOARD KSRTC SHUTTLE';hint.hidden=!(on||near);hint.textContent=on?'SIMULATED ROUTE / swipe to look / aim paused / leave at any safe point':bus?.wait>0?'SHUTTLE STOP / '+bus.stop+' / '+Math.ceil(bus.wait/10)+'s':'Shuttle moving. Board at a stop.';},100);
 })();
