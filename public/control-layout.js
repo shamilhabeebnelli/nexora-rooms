@@ -99,3 +99,118 @@
   window.addEventListener('resize',()=>{drag=null;paint();});
   captureDefaults();paint();
 })();
+
+/* North-up map UI. Bundled OSM grid uses positive Y toward north.
+ * Display-only: no changes to simulation, movement, teams or scores.
+ * Original geometry remains an approximate 29.8m/tile blockout. */
+(() => {
+  'use strict';
+  const map = window.KONDOTTY_MAP;
+  if (!map || !map.grid || !map.rooms) return;
+  const $ = id => document.getElementById(id);
+  const oldMini = $('nelli-minimap'), mapButton = $('nelli-mapbtn');
+  const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
+  const names = map.rooms.map(r => ({n:r.n,x:r.cx,y:r.cy}));
+  const terrain = document.createElement('canvas');
+  terrain.width=map.w;terrain.height=map.h;
+  const tg=terrain.getContext('2d'), palette=['#7c7969','#394b37','#394b37','#394b37','#394b37','#c0b898','#979b8b'];
+  for(let y=0;y<map.h;y++) for(let x=0;x<map.w;x++) {
+    tg.fillStyle=palette[Number(map.grid[y][x])]||palette[1];
+    tg.fillRect(x,map.h-1-y,1,1);
+  }
+  const style=document.createElement('style');
+  style.textContent=`
+    #nelli-minimap {visibility:hidden!important;pointer-events:none!important}
+    #nx-mini {position:fixed;right:max(8px,env(safe-area-inset-right));top:max(8px,env(safe-area-inset-top));width:96px;height:112px;padding:0;z-index:31;border:1px solid #c8c5a380;border-radius:7px;overflow:hidden;background:#17231ee8;color:#fff5d8;touch-action:manipulation;font:10px system-ui;cursor:pointer}
+    #nx-mini canvas {display:block;width:94px;height:94px}
+    #nx-mini span {display:block;height:16px;line-height:16px;background:#17231e}
+    #nx-place {position:fixed;right:112px;top:50px;max-width:min(220px,36vw);padding:6px 8px;z-index:29;background:#101b16dc;border:1px solid #b9b58a60;border-radius:5px;color:#f0ecd5;font:12px system-ui;text-align:right;pointer-events:none;line-height:1.35}
+    #nx-place small {display:block;font-size:9px;color:#b9c8b6}
+    #nx-mini[hidden],#nx-place[hidden],#nx-map[hidden] {display:none!important}
+    #nx-map {position:fixed;inset:0;z-index:88;box-sizing:border-box;padding:10px max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left));background:#0b1715f7;color:#f1eedb;font:12px system-ui;display:flex;flex-direction:column;gap:7px}
+    #nx-map header {display:flex;gap:12px;align-items:center;justify-content:space-between;min-height:36px;flex-shrink:0}
+    #nx-map h2 {font:600 16px system-ui;margin:0;letter-spacing:1px}
+    #nx-map-location {color:#c5cdbb;font-size:11px;margin-top:2px}
+    #nx-map nav {display:flex;gap:5px;align-items:center;flex-shrink:0}
+    #nx-map button {min-width:36px;min-height:36px;padding:5px 9px;border:1px solid #afb79280;background:#283d32;color:#f1eedb;border-radius:5px;font:12px system-ui;touch-action:manipulation;cursor:pointer}
+    #nx-map button:focus-visible,#nx-mini:focus-visible {outline:3px solid #ffdf70;outline-offset:1px}
+    #nx-map-stage {position:relative;flex:1;min-height:70px;overflow:hidden;border:1px solid #9cae8f80;border-radius:7px;background:#14241f}
+    #nx-map-canvas {display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+    #nx-map-canvas:active {cursor:grabbing}
+    #nx-map footer {font:10px/1.4 system-ui;color:#bac9b4;display:flex;gap:10px;justify-content:space-between;flex-wrap:wrap}
+    #nx-map footer a {color:#d3ddbc}
+    #nx-map-help {position:absolute;left:10px;bottom:8px;color:#e1e5cf;background:#0c1914c9;padding:4px 6px;border-radius:3px;font-size:10px;pointer-events:none}
+    @media(max-height:440px){#nx-map{padding-top:5px;gap:4px}#nx-map h2{font-size:13px}#nx-map header{min-height:34px}#nx-map footer{font-size:9px;gap:4px}#nx-map-location{font-size:10px}#nx-map button{min-height:34px;padding:4px 7px}}
+  `;
+  document.head.append(style);
+  const mini=document.createElement('button');mini.id='nx-mini';mini.hidden=true;
+  mini.setAttribute('aria-label','Expand location map');mini.title='Expand map';
+  mini.innerHTML='<canvas width="188" height="188" aria-hidden="true"></canvas><span>EXPAND MAP &#x2922;</span>';
+  const place=document.createElement('div');place.id='nx-place';place.hidden=true;
+  const overlay=document.createElement('section');overlay.id='nx-map';overlay.hidden=true;
+  overlay.setAttribute('role','dialog');overlay.setAttribute('aria-modal','true');overlay.setAttribute('aria-labelledby','nx-map-title');
+  overlay.innerHTML=`<header><div><h2 id="nx-map-title">KONDOTTY / AREA MAP</h2><div id="nx-map-location"></div></div><nav aria-label="Map controls"><button id="nx-map-out" aria-label="Zoom out">-</button><button id="nx-map-in" aria-label="Zoom in">+</button><button id="nx-map-you">YOU</button><button id="nx-map-fit">FIT</button><button id="nx-map-close" aria-label="Close map">CLOSE</button></nav></header><div id="nx-map-stage"><canvas id="nx-map-canvas" aria-label="North-up map showing place names and player positions"></canvas><div id="nx-map-help">Drag to pan / pinch or + - to zoom</div></div><footer><span><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">Map data &copy; OpenStreetMap contributors / ODbL</a> / approximate game blockout, not Street View</span><span id="nx-map-status"></span></footer>`;
+  document.body.append(mini,place,overlay);
+  const cv=$('nx-map-canvas'), g=cv.getContext('2d'), mg=mini.querySelector('canvas').getContext('2d');
+  let zoom=1,cx=map.w/2,cy=map.h/2,W=1,H=1,scale=1,restoreFocus=null;
+  let lastState=null,lastPlace='',lastMarker='';
+  const pointers=new Map();let pinch=null;
+  function state(){const s=window.__nelliS;return s&&s.joined&&s.state&&s.state.you?s.state:null;}
+  function nearest(you){let best=null;for(const n of names){const d=Math.hypot(n.x-you.x,n.y-you.y);if(!best||d<best.d)best={...n,d};}return best;}
+  function where(you){const n=nearest(you);if(!n)return 'Kondotty area';return 'Near '+n.n;}
+  function distance(d){const m=Math.round(d*map.cellM/50)*50;return m<1000?'~'+m+' m':'~'+(m/1000).toFixed(1)+' km';}
+  function limits(){scale=Math.min(W/map.w,H/map.h)*zoom;cx=clamp(cx,0,map.w);cy=clamp(cy,0,map.h);}
+  function point(x,y){return [W/2+(x-cx)*scale,H/2-(y-cy)*scale];}
+  function resize(){const r=cv.parentElement.getBoundingClientRect();W=Math.max(1,r.width);H=Math.max(1,r.height);const d=Math.min(devicePixelRatio||1,2);cv.width=Math.round(W*d);cv.height=Math.round(H*d);g.setTransform(d,0,0,d,0,0);limits();draw();}
+  function marker(ctx,x,y,face,color,size){ctx.save();ctx.translate(x,y);ctx.fillStyle=color;ctx.strokeStyle='#10251e';ctx.lineWidth=2;if(face){ctx.rotate(Math.atan2(face[0],face[1]));ctx.beginPath();ctx.moveTo(0,-size*1.6);ctx.lineTo(size,size);ctx.lineTo(0,size*.55);ctx.lineTo(-size,size);ctx.closePath();}else{ctx.beginPath();ctx.arc(0,0,size,0,Math.PI*2);}ctx.fill();ctx.stroke();ctx.restore();}
+  function draw(){
+    if(overlay.hidden)return;limits();g.clearRect(0,0,W,H);g.fillStyle='#14241f';g.fillRect(0,0,W,H);
+    const [x,y]=point(0,map.h);g.imageSmoothingEnabled=false;g.drawImage(terrain,x,y,map.w*scale,map.h*scale);
+    // Grid and scale refer to the bundled game coordinates, not a GPS reading.
+    g.strokeStyle='#e8edce12';g.lineWidth=1;
+    for(let t=0;t<=map.w;t+=32){const [px]=point(t,0);g.beginPath();g.moveTo(px,0);g.lineTo(px,H);g.stroke();}
+    for(let t=0;t<=map.h;t+=32){const [,py]=point(0,t);g.beginPath();g.moveTo(0,py);g.lineTo(W,py);g.stroke();}
+    const st=state(), you=st&&st.you, near=you&&nearest(you);
+    const order=[...names].sort((a,b)=>{const rank=n=>near&&n.n===near.n?3:n.n==='Kondotty'?2:['Karipur','Kizhissery','Kottappuram'].includes(n.n)?1:0;return rank(b)-rank(a);});
+    const used=[];g.font='600 12px system-ui';g.textAlign='center';g.textBaseline='middle';
+    for(const n of order){const [px,py]=point(n.x,n.y);if(px<0||px>W||py<0||py>H)continue;
+      g.fillStyle='#dbe8c6';g.beginPath();g.arc(px,py,2,0,7);g.fill();
+      const tw=g.measureText(n.n).width+10;let box=null;
+      for(const off of [-18,18,-35,35]){const b={x:px-tw/2,y:py+off-9,w:tw,h:18};if(b.x<3||b.x+b.w>W-3||b.y<3||b.y+b.h>H-3)continue;if(!used.some(a=>b.x<a.x+a.w+3&&b.x+b.w+3>a.x&&b.y<a.y+a.h+2&&b.y+b.h+2>a.y)){box=b;break;}}
+      if(!box)continue;used.push(box);g.strokeStyle='#d1dcaf66';g.beginPath();g.moveTo(px,py);g.lineTo(px,box.y+9);g.stroke();g.fillStyle='#10251eea';g.fillRect(box.x,box.y,box.w,box.h);g.fillStyle=near&&near.n===n.n?'#ffe38b':'#edf2da';g.fillText(n.n,px,box.y+9);
+    }
+    if(st){for(const o of st.others||[]){const p=point(o.x,o.y);marker(g,...p,null,o.dead?'#84928d':'#8ed8ff',4);}marker(g,...point(you.x,you.y),you.f,'#ffdb64',6);}
+    g.textAlign='left';g.textBaseline='alphabetic';g.fillStyle='#10251eea';g.fillRect(8,8,39,42);g.fillStyle='#eef2d5';g.font='bold 13px system-ui';g.fillText('N',22,24);g.beginPath();g.moveTo(27,29);g.lineTo(21,42);g.lineTo(33,42);g.closePath();g.fill();
+    const meters=zoom<2?1000:zoom<4?500:200, len=meters/map.cellM*scale;
+    g.strokeStyle='#edf2d5';g.lineWidth=2;g.beginPath();g.moveTo(W-18-len,H-27);g.lineTo(W-18,H-27);g.stroke();g.font='10px system-ui';g.textAlign='right';g.fillStyle='#edf2d5';g.fillText('~'+meters+' m',W-18,H-34);
+    $('nx-map-status').textContent=zoom.toFixed(1)+'x / gold: you / blue: players';
+  }
+  function drawMini(st){
+    const y=st.you,SZ=188,r=23,ss=SZ/(r*2);mg.clearRect(0,0,SZ,SZ);mg.fillStyle='#14241f';mg.fillRect(0,0,SZ,SZ);mg.imageSmoothingEnabled=false;
+    mg.drawImage(terrain,(map.w/2-y.x)*ss+SZ/2-map.w*ss/2, (y.y-map.h)*ss+SZ/2,map.w*ss,map.h*ss);
+    for(const o of st.others||[]){const px=SZ/2+(o.x-y.x)*ss,py=SZ/2-(o.y-y.y)*ss;if(px>4&&px<SZ-4&&py>4&&py<SZ-4)marker(mg,px,py,null,o.dead?'#84928d':'#8ed8ff',4);}
+    marker(mg,SZ/2,SZ/2,y.f,'#ffdb64',8);mg.fillStyle='#10251eea';mg.fillRect(5,4,27,26);mg.fillStyle='#fff0c7';mg.font='bold 19px system-ui';mg.fillText('N',10,24);
+  }
+  function update(){const st=state();const visible=!!st&&!(oldMini&&oldMini.classList.contains('nelli-hidden'));mini.hidden=place.hidden=!visible;if(!visible){if(!overlay.hidden)close();return;}
+    lastState=st;drawMini(st);const n=nearest(st.you),label=where(st.you),detail=n?distance(n.d)+' from named point / game position':'Game position';
+    if(label+'|'+detail!==lastPlace){place.replaceChildren(document.createTextNode(label));const sub=document.createElement('small');sub.textContent=detail;place.append(sub);lastPlace=label+'|'+detail;}
+    $('nx-map-location').textContent=label+(n?' / '+distance(n.d)+' from named point':'')+' / game position, not phone GPS';
+    if(!overlay.hidden)draw();
+  }
+  function stopMotion(){window.dispatchEvent(new Event('blur'));}
+  function open(){if(!state())return;restoreFocus=document.activeElement;overlay.hidden=false;stopMotion();resize();$('nx-map-close').focus({preventScroll:true});}
+  function close(){overlay.hidden=true;pointers.clear();pinch=null;stopMotion();if(restoreFocus&&restoreFocus.isConnected)restoreFocus.focus({preventScroll:true});}
+  function changeZoom(next){zoom=clamp(next,1,8);limits();draw();}
+  function center(){const st=state();if(st){cx=st.you.x;cy=st.you.y;zoom=Math.max(zoom,3);}draw();}
+  mini.addEventListener('click',open);
+  if(mapButton)mapButton.addEventListener('click',e=>{if(document.body.classList.contains('nelli-layout-editing'))return;e.preventDefault();e.stopImmediatePropagation();overlay.hidden?open():close();},true);
+  $('nx-map-close').addEventListener('click',close);$('nx-map-in').addEventListener('click',()=>changeZoom(zoom*1.5));$('nx-map-out').addEventListener('click',()=>changeZoom(zoom/1.5));$('nx-map-you').addEventListener('click',center);$('nx-map-fit').addEventListener('click',()=>{zoom=1;cx=map.w/2;cy=map.h/2;draw();});
+  cv.addEventListener('wheel',e=>{e.preventDefault();changeZoom(zoom*(e.deltaY<0?1.15:1/1.15));},{passive:false});
+  cv.addEventListener('pointerdown',e=>{e.preventDefault();cv.setPointerCapture(e.pointerId);pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===2){const [a,b]=[...pointers.values()];pinch={d:Math.hypot(a.x-b.x,a.y-b.y),z:zoom};}});
+  cv.addEventListener('pointermove',e=>{const old=pointers.get(e.pointerId);if(!old)return;e.preventDefault();pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===2&&pinch){const [a,b]=[...pointers.values()];changeZoom(pinch.z*Math.hypot(a.x-b.x,a.y-b.y)/Math.max(1,pinch.d));}else if(pointers.size===1){cx-=(e.clientX-old.x)/scale;cy+=(e.clientY-old.y)/scale;draw();}});
+  for(const type of ['pointerup','pointercancel','lostpointercapture'])cv.addEventListener(type,e=>{pointers.delete(e.pointerId);pinch=null;});
+  window.addEventListener('keydown',e=>{if(overlay.hidden)return;e.stopImmediatePropagation();const buttons=[...overlay.querySelectorAll('button,a')];if(e.key==='Escape'){e.preventDefault();close();}else if(e.key==='Tab'){const i=buttons.indexOf(document.activeElement),n=e.shiftKey?(i<=0?buttons.length-1:i-1):(i+1)%buttons.length;e.preventDefault();buttons[n].focus();}else if(['+','=','-','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();if(e.key==='+'||e.key==='=')changeZoom(zoom*1.5);else if(e.key==='-')changeZoom(zoom/1.5);else {cx+=(e.key==='ArrowRight'?40:e.key==='ArrowLeft'?-40:0)/scale;cy+=(e.key==='ArrowUp'?40:e.key==='ArrowDown'?-40:0)/scale;draw();}}},true);
+  window.addEventListener('resize',()=>{if(!overlay.hidden)resize();});
+  document.addEventListener('visibilitychange',()=>{if(document.hidden&&!overlay.hidden)close();});
+  setInterval(update,200);update();
+})();
