@@ -89,7 +89,7 @@
       for (let x = 0; x < w; x++) grid[y * w + x] = row.charCodeAt(x) - 48;
     }
     const police = (data.police || []).map((p) => ({ n: p.n, town: p.n, x: p.x, y: p.y, kind: 'police' }));
-    return { grid, w, h, rooms: data.rooms || [], landmarks: [], police, spawn: data.spawn, kondotty: true };
+    return { grid, w, h, rooms: data.rooms || [], landmarks: (data.landmarks||[]).map(p=>({...p})), police, spawn: data.spawn, kondotty: true };
   }
 
   function genDungeon(seed, w, h) {
@@ -307,11 +307,15 @@
       this.floor = f;
       // odd floors: his route map. even floors: the invented airport arena
       this.map = genKondotty() || genDungeon(this.seedBase, MAP_W, MAP_H);
+      this.setupBus();
       this.mobs.clear();
+      this.medkits=[];
+      const kitAnchors=[...(this.map.police||[]),...(this.map.landmarks||[]).filter(l=>l.kind==='hospital')];
+      for(const a of kitAnchors){let best=null;for(let r=0;r<=4&&!best;r++)for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){const x=a.x+dx,y=a.y+dy,t=this.map.grid[y*this.map.w+x];if([T.FLOOR,T.ROAD_MAIN,T.ROAD_SUB].includes(t)&&(!best||dx*dx+dy*dy<best.d))best={x,y,d:dx*dx+dy*dy};}if(best)this.medkits.push({id:this.medkits.length,x:best.x,y:best.y,readyAt:0});}
       this.projs = []; // bullets die with the floor
       const rnd = nelliSeed((this.seedBase ^ (f * 31337)) >>> 0);
       const combat = this.map.arena ? 6 : 0; // arena floors run hotter
-      const count = this.map.kondotty ? 0 : Math.min(8 + f * 2 + combat, 20);
+      const count = 0; // Only actual joined humans populate every game mode.
       let placed = 0, guard = 0;
       while (placed < count && guard++ < 4000) {
         const x = 1 + Math.floor(rnd() * (this.map.w - 2));
@@ -327,8 +331,58 @@
       }
       for (const p of this.players.values()) {
         const spot = this.freeSpotNear(this.map.spawn.x, this.map.spawn.y);
-        p.x = spot.x; p.y = spot.y;
+        p.x = spot.x; p.y = spot.y;p.riding=false;
       }
+    }
+
+    setupBus() {
+      this.bus=null;if(!this.map.kondotty)return;
+      const m=this.map,w=m.w,n=w*m.h,original=m.grid.slice(),rd=new Int16Array(n).fill(999),clear=new Float32Array(n).fill(999),queue=[];
+      for(let k=0;k<n;k++)if([T.ROAD_MAIN,T.ROAD_SUB].includes(original[k])){rd[k]=0;queue.push(k);}
+      for(let h=0;h<queue.length;h++){const k=queue[h];if(rd[k]>=4)continue;for(const v of [k-1,k+1,k-w,k+w])if(v>=0&&v<n&&rd[v]>rd[k]+1){rd[v]=rd[k]+1;queue.push(v);}}
+      // Invented buildings stay intact. Reserve a full bus-length turning disc, not just its center cell.
+      for(let y=0;y<m.h;y++)for(let x=0;x<w;x++)if(original[y*w+x]===T.WALL)for(let dy=-5;dy<=5;dy++)for(let dx=-5;dx<=5;dx++)if(x+dx>=0&&x+dx<w&&y+dy>=0&&y+dy<m.h){const k=(y+dy)*w+x+dx;clear[k]=Math.min(clear[k],Math.hypot(Math.max(0,Math.abs(dx)-.5),Math.max(0,Math.abs(dy)-.5)));}
+      const allowed=k=>k>=0&&k<n&&rd[k]<=4&&clear[k]>3;
+      let start=null,best=Infinity;for(let k=0;k<n;k++)if(allowed(k)){const d=(k%w-m.spawn.x)**2+(Math.floor(k/w)-m.spawn.y)**2;if(d<best){best=d;start=k;}}
+      if(start===null)return;
+      const component=[start],seen=new Set([start]);for(let h=0;h<component.length;h++)for(const v of [component[h]-1,component[h]+1,component[h]-w,component[h]+w])if(allowed(v)&&!seen.has(v)){seen.add(v);component.push(v);}
+      const anchors=[{n:'Kondotty',x:m.spawn.x,y:m.spawn.y},...(m.landmarks||[]).filter(l=>l.kind==='hospital'||l.kind==='airport'),...(m.rooms||[]).filter(r=>r.n==='Karipur').map(r=>({n:r.n,x:r.cx,y:r.cy}))];
+      const stops=anchors.map(a=>{let k=component[0],best=Infinity;for(const v of component){const dd=(v%w-a.x)**2+(Math.floor(v/w)-a.y)**2;if(dd<best){best=dd;k=v;}}return {k,n:a.n};});
+      // Weighted A* favors the old road centerline. It detours only into nearby open terrain.
+      const route=[],usedEdges=new Set();
+      for(let s=0;s<stops.length;s++){
+        const a=stops[s],end=stops[(s+1)%stops.length].k,heap=[],dist=new Map([[a.k,0]]),prev=new Map([[a.k,null]]);
+        const push=o=>{heap.push(o);let i=heap.length-1;while(i){const p=(i-1)>>1;if(heap[p].f<=o.f)break;heap[i]=heap[p];i=p;}heap[i]=o;};
+        const pop=()=>{const top=heap[0],last=heap.pop();if(heap.length){let i=0;while(i*2+1<heap.length){let c=i*2+1;if(c+1<heap.length&&heap[c+1].f<heap[c].f)c++;if(heap[c].f>=last.f)break;heap[i]=heap[c];i=c;}heap[i]=last;}return top;};
+        const heuristic=k=>Math.abs(k%w-end%w)+Math.abs(Math.floor(k/w)-Math.floor(end/w));push({k:a.k,g:0,f:heuristic(a.k)});
+        while(heap.length){const at=pop();if(at.g!==dist.get(at.k))continue;if(at.k===end)break;for(const v of [at.k-1,at.k+1,at.k-w,at.k+w])if(seen.has(v)){if(at.k===a.k&&route.length&&v===route[route.length-1].y*w+route[route.length-1].x)continue;if(s===stops.length-1&&v===end&&route.length>1&&at.k===route[1].y*w+route[1].x)continue;const edge=Math.min(at.k,v)+':'+Math.max(at.k,v);const g=at.g+1+rd[v]*1.5+(usedEdges.has(edge)?8:0);if(g<(dist.get(v)??Infinity)){dist.set(v,g);prev.set(v,at.k);push({k:v,g,f:g+heuristic(v)});}}}
+        if(!prev.has(end))return;const leg=[];for(let k=end;k!==null;k=prev.get(k))leg.push({x:k%w,y:Math.floor(k/w)});leg.reverse();for(let j=1;j<leg.length;j++){const u=leg[j-1].y*w+leg[j-1].x,v=leg[j].y*w+leg[j].x;usedEdges.add(Math.min(u,v)+':'+Math.max(u,v));}leg[0].stop=a.n;route.push(...leg.slice(0,-1));
+      }
+      if(route.length<2)return;
+      for(let pass=0;pass<6;pass++){const copy=route.map(p=>({...p}));for(let i=0;i<route.length;i++){const a=copy[(i-1+route.length)%route.length],b=copy[i],c=copy[(i+1)%route.length];route[i].x=(a.x+2*b.x+c.x)/4;route[i].y=(a.y+2*b.y+c.y)/4;}}
+      // A Catmull-Rom centerline removes instantaneous 90-degree rotations. Dense samples also permit swept-footprint QA.
+      const smooth=[];for(let i=0;i<route.length;i++){const p0=route[(i-1+route.length)%route.length],p1=route[i],p2=route[(i+1)%route.length],p3=route[(i+2)%route.length];for(let j=0;j<5;j++){const t=j/5,point={};for(const axis of ['x','y']){const a=p0[axis],b=p1[axis],c=p2[axis],d=p3[axis];point[axis]=.5*((2*b)+(-a+c)*t+(2*a-5*b+4*c-d)*t*t+(-a+3*b-3*c+d)*t*t*t);}if(!j&&p1.stop)point.stop=p1.stop;smooth.push(point);}}
+      // Fictional gameplay paving, never a surveyed street width. Keep every building tile untouched.
+      m.shuttleMask=new Uint8Array(n);m.shuttlePaving=[];for(const p of smooth)for(let y=Math.floor(p.y-2.7);y<=Math.ceil(p.y+2.7);y++)for(let x=Math.floor(p.x-2.7);x<=Math.ceil(p.x+2.7);x++)if(x>=0&&x<w&&y>=0&&y<m.h&&Math.hypot(x-p.x,y-p.y)<=2.7&&original[y*w+x]!==T.WALL){const k=y*w+x;m.shuttleMask[k]=1;if(m.grid[k]!==T.ROAD_SUB){m.grid[k]=T.ROAD_SUB;m.shuttlePaving.push(k);}}
+      const first=smooth[0],next=smooth[1],len=Math.hypot(next.x-first.x,next.y-first.y);
+      this.bus={x:first.x,y:first.y,dx:(next.x-first.x)/len,dy:(next.y-first.y)/len,route:smooth,index:0,wait:80,stop:first.stop,riders:new Set()};
+      this.bus.originalGrid=original;
+    }
+    boardBus(id) {
+      const p=this.players.get(id),b=this.bus;if(!p||!b||p.hp<=0)return false;
+      if(b.riders.has(id)){
+        const start={x:Math.round(b.x),y:Math.round(b.y)},q=[{...start,d:0}],seen=new Set([start.x+','+start.y]);let spot=null;
+        for(let h=0;h<q.length;h++){const at=q[h];const ex=at.x-b.x,ey=at.y-b.y,side=ex*b.dy-ey*b.dx,along=ex*b.dx+ey*b.dy;if((Math.abs(side)>1.05||Math.abs(along)>2.5)&&!this.playerAt(at.x,at.y,p)){spot=at;break;}if(at.d>=5)continue;for(const [dx,dy]of [[1,0],[-1,0],[0,1],[0,-1]]){const x=at.x+dx,y=at.y+dy,key=x+','+y;if(!seen.has(key)&&this.walkable(x,y)){seen.add(key);q.push({x,y,d:at.d+1});}}}
+        if(!spot)return false;p.x=spot.x;p.y=spot.y;p.dir=null;b.riders.delete(id);p.riding=false;return true;
+      }
+      if(b.wait<=0||Math.hypot(p.x-b.x,p.y-b.y)>3||b.riders.size>=10)return false;
+      b.riders.add(id);p.riding=true;p.dir=null;p.stance='stand';return true;
+    }
+    tickBus() {
+      const b=this.bus;if(!b)return;
+      for(const id of b.riders){const p=this.players.get(id);if(!p||p.hp<=0){b.riders.delete(id);if(p)p.riding=false;}}
+      if(b.wait>0)b.wait--;else{const target=b.route[(b.index+1)%b.route.length],dx=target.x-b.x,dy=target.y-b.y,d=Math.hypot(dx,dy),step=.17;b.dx=dx/(d||1);b.dy=dy/(d||1);if(d<=step){b.x=target.x;b.y=target.y;b.index=(b.index+1)%b.route.length;if(target.stop){b.wait=80;b.stop=target.stop;}}else{b.x+=dx/d*step;b.y+=dy/d*step;}}
+      let seat=0;for(const id of b.riders){const p=this.players.get(id),side=(seat%2?1:-1)*.3375,longitudinal=(Math.floor(seat/2)-2)*.53125;p.x=b.x+b.dy*side+b.dx*longitudinal;p.y=b.y-b.dx*side+b.dy*longitudinal;p.face=[b.dx,b.dy];p.dir=null;seat++;}
     }
 
     walkable(x, y) {
@@ -348,7 +402,7 @@
     playerHitAt(x, y, except, z) {
       for (const p of this.players.values()) {
         if (p === except || p.hp <= 0 || Math.hypot(p.x - x, p.y - y) >= 0.6) continue;
-        if (z !== undefined && z > (STANCE_TOP[p.stance] || 1.8)) continue; // over the profile - honest miss, not immunity
+        if (z !== undefined && (z > (p.riding?2.25:(STANCE_TOP[p.stance] || 1.8)) || (p.riding&&z<.85))) continue; // over the profile - honest miss, not immunity
         return p;
       }
       return null;
@@ -361,6 +415,7 @@
     setStance(id, st) {
       const p = this.players.get(id);
       if (!p || p.hp <= 0) return;
+      if(p.riding)return;
       if (st === 'stand' || st === 'crouch' || st === 'prone') p.stance = st;
     }
 
@@ -504,6 +559,7 @@
        bullets damage other players (the requested friend shooter). */
     shoot(id, pitch) {
       const p = this.players.get(id);
+      if(p?.riding)return false;
       if (!p || p.hp <= 0 || p.cd > 0) return false;
       p.cd = 6; // a shot recovers slower than a swing
       p.shots = (p.shots || 0) + 1;
@@ -519,6 +575,7 @@
 
     tick() {
       this.tickCount++;
+      this.tickBus();
       for (const p of this.players.values()) {
         if (p.hp <= 0) {
           if (p.rebirthAt && this.tickCount >= p.rebirthAt) this.rebirth(p);
@@ -527,13 +584,14 @@
         p.cd = Math.max(0, p.cd - 1);
         p.hurtCd = Math.max(0, p.hurtCd - 1);
         if (p.dir && this.tickCount - p.dirTick > 6) p.dir = null;
-        if (p.dir) {
+        if (p.dir && !p.riding) {
           const distance = (STANCE_SPEED[p.stance] || 4) / TILE_M / 10;
           const nx = p.x + p.dir.dx * distance, ny = p.y + p.dir.dy * distance;
           // Axis separation permits wall sliding without faster diagonal travel.
           if (this.canMove(p, nx, p.y)) p.x = nx;
           if (this.canMove(p, p.x, ny)) p.y = ny;
         }
+        if(p.hp<p.maxHp)for(const kit of this.medkits||[]){if(this.tickCount>=kit.readyAt&&Math.hypot(p.x-kit.x,p.y-kit.y)<.75){p.hp=Math.min(p.maxHp,p.hp+30);kit.readyAt=this.tickCount+300;this.events.push({k:'heal',id:p.id});break;}}
         const tileIndex = Math.round(p.y) * this.map.w + Math.round(p.x);
         const t = this.map.grid[tileIndex];
         if (t === T.POTION) {
@@ -655,7 +713,7 @@
       const others = [];
       for (const q of this.players.values()) {
         // Room roster is independent of terrain culling; fog/walls still occlude models.
-        if (q.id !== id) others.push({ id: q.id, n: q.name, x: q.x, y: q.y, hp: q.hp, mh: q.maxHp, hu: q.hue, dead: q.hp <= 0, f: q.face, j: q.jumpUntil > this.tickCount ? 1 : 0, st: q.stance });
+        if (q.id !== id) others.push({ id: q.id, n: q.name, x: q.x, y: q.y, hp: q.hp, mh: q.maxHp, hu: q.hue, dead: q.hp <= 0, f: q.face, j: q.jumpUntil > this.tickCount ? 1 : 0, st: q.stance, riding:!!q.riding });
       }
       const mobs = [];
       for (const m of this.mobs.values()) if (near(m)) mobs.push({ id: m.id, x: m.x, y: m.y, hp: m.hp, mh: m.maxHp });
@@ -680,7 +738,10 @@
       const snap = {
         t: 'state', tick: this.tickCount, floor: this.floor,
         you: { id: p.id, x: p.x, y: p.y, hp: p.hp, mh: p.maxHp, gold: p.gold, kills: p.kills, deaths: p.deaths, hu: p.hue, dead: p.hp <= 0, f: p.face, j: p.jumpUntil > this.tickCount ? 1 : 0, st: p.stance, place: p.place || null, hits: p.hits || 0, swings: p.swings || 0, shots: p.shots || 0, shotHits: p.shotHits || 0 },
-        view: { x0, y0, tiles },
+        view: { x0, y0, tiles, lane: tiles.map((line,row)=>Array.from(line,(_,col)=>this.map.shuttleMask?.[(y0+row)*this.map.w+x0+col]?'1':'0').join('')) },
+        bus:this.bus?{x:this.bus.x,y:this.bus.y,dx:this.bus.dx,dy:this.bus.dy,wait:this.bus.wait,stop:this.bus.stop,riders:[...this.bus.riders],next:this.bus.route[(this.bus.index+1)%this.bus.route.length].stop||null}:null,
+        riding:!!p.riding,
+        medkits:(this.medkits||[]).filter(k=>near(k)&&this.tickCount>=k.readyAt).map(k=>({id:k.id,x:k.x,y:k.y})),
         others, mobs, projs, labels, ev: sharedEvents !== undefined ? sharedEvents : this.drainEvents(),
         party: this.players.size, alive: [...this.players.values()].filter((q) => q.hp > 0).length, finished: this.finished, motm: this.motm, target: this.targetKills,
       };
