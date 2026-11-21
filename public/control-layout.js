@@ -214,3 +214,9 @@
   document.addEventListener('visibilitychange',()=>{if(document.hidden&&!overlay.hidden)close();});
   setInterval(update,200);update();
 })();
+/* Keep the existing saved map-transparency setting working for the new view. */
+(() => {
+  const slider=document.getElementById('nelli-mapopa');
+  function sync(){if(!slider)return;const opacity=String(Math.max(.2,Math.min(1,Number(slider.value)/100)));for(const node of document.querySelectorAll('#nx-mini canvas,#nx-map-canvas'))node.style.opacity=opacity;}
+  if(slider)slider.addEventListener('input',sync);sync();
+})();
