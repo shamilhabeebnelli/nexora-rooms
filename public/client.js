@@ -426,6 +426,7 @@ function sendJump() {
   if (S.mode === 'solo' || S.mode === 'host') S.delve.jump(S.myId);
 }
 function sendShoot() {
+  if(window.NelliFps?.freeLooking)return;
   aimThen(() => {
     const pitch = (window.NelliFps && NelliFps.ready) ? NelliFps.pitch : 0; // real vertical aim; the sim is height-aware
     if (wsSend({ t: 'shoot', pitch })) return;
