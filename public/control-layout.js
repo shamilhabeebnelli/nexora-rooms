@@ -220,3 +220,86 @@
   function sync(){if(!slider)return;const opacity=String(Math.max(.2,Math.min(1,Number(slider.value)/100)));for(const node of document.querySelectorAll('#nx-mini canvas,#nx-map-canvas'))node.style.opacity=opacity;}
   if(slider)slider.addEventListener('input',sync);sync();
 })();
+/* Pure display-state helper. No simulation writes or rendering assumptions.
+ * Defaults: announce while approaching within ~360m of a named point;
+ * hide within ~90m, then re-arm after leaving ~480m. All distances are
+ * approximate and measured in the existing 29.8m game grid.
+ */
+(function(root,factory){if(typeof module==='object'&&module.exports)module.exports=factory();else root.NexoraApproachLabels=factory();})(typeof globalThis==='object'?globalThis:this,function(){
+  'use strict';
+  function create(points,options){
+    const o=Object.assign({showRadius:12,arrivalRadius:3,rearmRadius:16,approachDelta:.12},options||{});
+    const memory=new Map();let active=null;
+    return {
+      update(x,y){
+        if(!Number.isFinite(x)||!Number.isFinite(y)){active=null;return null;}
+        const candidates=[];
+        for(const p of points){
+          const key=p.id||p.n,d=Math.hypot(p.x-x,p.y-y);
+          let m=memory.get(key);
+          if(!m){m={last:d,arrived:d<=o.arrivalRadius};memory.set(key,m);continue;}
+          if(d>=o.rearmRadius)m.arrived=false;
+          if(d<=o.arrivalRadius){m.arrived=true;if(active&&active.key===key)active=null;}
+          const approaching=m.last-d>=o.approachDelta;
+          if(!m.arrived&&d>o.arrivalRadius&&d<=o.showRadius&&approaching)candidates.push({key,n:p.n,x:p.x,y:p.y,d});
+          if(active&&active.key===key){
+            if(d>o.showRadius+1||d-m.last>o.approachDelta)active=null;
+            else active={key,n:p.n,x:p.x,y:p.y,d};
+          }
+          // Retain a baseline through very slow movement so approach detection
+          // does not depend on frame rate. Update it after a meaningful change.
+          if(Math.abs(m.last-d)>=o.approachDelta)m.last=d;
+        }
+        if(!active&&candidates.length){candidates.sort((a,b)=>a.d-b.d);active=candidates[0];}
+        return active&&Object.assign({},active);
+      },
+      reset(){memory.clear();active=null;}
+    };
+  }
+  return {create};
+});
+
+/* Approach-only original roadside signs. Static game props, not surveyed signs. */
+(() => {
+  'use strict';
+  const map=window.KONDOTTY_MAP,helper=window.NexoraApproachLabels;
+  if(!map||!helper)return;
+  const logic=helper.create(map.rooms.map(r=>({n:r.n,x:r.cx,y:r.cy})));
+  const style=document.createElement('style');style.textContent='#nx-place{display:none!important}';document.head.append(style);
+  let group=null,current=null,lastRoom=null,lastId=null;
+  function remove(){if(!group)return;group.removeFromParent();group.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}});group=null;}
+  function build(label,you){
+    const THREE=window.__THREE,debug=window.__fpsDebug;if(!THREE||!debug||!window.NelliFps.ready)return;
+    remove();
+    const dx=label.x-you.x,dy=label.y-you.y,len=Math.max(.01,Math.hypot(dx,dy)),ux=dx/len,uy=dy/len;
+    // Stand a little ahead and to the roadside of the approach path. Prefer
+    // a walkable local road cell so the board is not buried inside a building.
+    let anchor={x:you.x+ux*3+uy*1.4,y:you.y+uy*3-ux*1.4},best=Infinity;
+    for(let y=Math.max(0,Math.floor(anchor.y)-3);y<=Math.min(map.h-1,Math.floor(anchor.y)+3);y++)for(let x=Math.max(0,Math.floor(anchor.x)-3);x<=Math.min(map.w-1,Math.floor(anchor.x)+3);x++){
+      const code=Number(map.grid[y][x]);if(code!==5&&code!==6&&code!==1)continue;
+      const dist=Math.hypot(x-you.x,y-you.y);if(dist<2||dist>7)continue;
+      const ahead=(x-you.x)*ux+(y-you.y)*uy;if(ahead<1)continue;
+      const rank=Math.hypot(x-anchor.x,y-anchor.y)+(code===1?0:.5);
+      if(rank<best){best=rank;anchor={x:x+uy*.38,y:y-ux*.38};}
+    }
+    group=new THREE.Group();group.name='nexora-approach-sign';
+    const art=document.createElement('canvas');art.width=1024;art.height=320;const g=art.getContext('2d');
+    g.fillStyle='#15523b';g.fillRect(0,0,1024,320);g.strokeStyle='#f3f0d9';g.lineWidth=11;g.strokeRect(17,17,990,286);
+    g.fillStyle='#f7f5e8';g.textAlign='center';g.textBaseline='middle';let size=100;do{g.font='600 '+size+'px sans-serif';if(g.measureText(label.n).width<870)break;size-=4;}while(size>38);g.fillText(label.n,512,125);
+    g.font='42px sans-serif';g.fillText('AHEAD',512,242);
+    const tex=new THREE.CanvasTexture(art);if(THREE.SRGBColorSpace)tex.colorSpace=THREE.SRGBColorSpace;
+    const board=new THREE.Mesh(new THREE.BoxGeometry(3.8,1.2,.10),new THREE.MeshLambertMaterial({color:0x25483b}));board.position.y=2.2;group.add(board);
+    const face=new THREE.Mesh(new THREE.PlaneGeometry(3.72,1.12),new THREE.MeshBasicMaterial({map:tex}));face.position.set(0,2.2,.056);group.add(face);
+    for(const x of [-1.35,1.35]){const pole=new THREE.Mesh(new THREE.CylinderGeometry(.045,.055,2.2,6),new THREE.MeshLambertMaterial({color:0xb4b8ae}));pole.position.set(x,1.1,0);group.add(pole);}
+    group.position.set(anchor.x*1.6,0,anchor.y*1.6);group.rotation.y=Math.atan2((you.x-anchor.x),(you.y-anchor.y));debug.scene().add(group);
+  }
+  setInterval(()=>{
+    const s=window.__nelliS,st=s&&s.joined&&s.state,you=st&&st.you;
+    if(!you){remove();current=null;logic.reset();return;}
+    if(lastRoom!==s.room||lastId!==s.myId){logic.reset();remove();current=null;lastRoom=s.room;lastId=s.myId;}
+    const label=logic.update(you.x,you.y);
+    if(!label||you.dead){remove();current=null;return;}
+    if(current!==label.key||!group){build(label,you);if(group)current=label.key;}
+    if(group)group.visible=!document.hidden&&document.querySelector('#nx-map').hidden;
+  },200);
+})();
