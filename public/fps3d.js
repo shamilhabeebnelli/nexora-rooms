@@ -7,11 +7,13 @@
   let renderer = null, scene = null, cam = null, ready = false, failed = false, selfJt = 0;
   let shops = null, shotBlocked = false, shotBlockDist = 0;
   let walls = null, roads = null, dashes = null, ground = null, trunks = null, canopies = null;
+  let shuttleLane = null, horizonGround=null, shuttleSurface=null;
   let roadsV = null, tanks = null, poles = null, lampHeads = null, sunLight = null, skyDome = null, sunSprite = null;
   const SUN_DIR = { x: -0.55, y: 0.46, z: 0.42 }; /* low warm dusk sun; long shadows, occluded by buildings */
-  let othersGroup = null, mobGroup = null, projGroup = null, beaconGroup = null;
+  let othersGroup = null, mobGroup = null, projGroup = null, beaconGroup = null, medkitGroup=null;
+  let medkitMat=null,medkitGeo=null,busGroup=null;
   let yaw = 0, pitch = 0, canvasEl = null, lean = 0;
-  let freeLooking=false,freeYaw=0,freePitch=0;
+  let freeLooking=false,freeYaw=0,freePitch=0,lastRideYaw=null;
   function setFreeLook(on){freeLooking=!!on;freeYaw=0;freePitch=0;}
   const STANCE_EYE_H = { stand: 1.55, crouch: 1.05, prone: 0.55 };
   const eyeH = (st) => STANCE_EYE_H[st] || 1.55;
@@ -179,9 +181,7 @@
       sunLight.shadow.bias = -0.0004; sunLight.shadow.normalBias = 0.03;
       scene.add(sunLight); scene.add(sunLight.target);
 
-      ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500),
-        new THREE.MeshLambertMaterial({ color: 0xffffff }));
-      ground.rotation.x = -Math.PI / 2; scene.add(ground);
+      ground=new THREE.InstancedMesh(new THREE.BoxGeometry(TILE,.04,TILE),new THREE.MeshLambertMaterial({color:0xffffff}),MAXI);ground.frustumCulled=false;scene.add(ground);
       /* original procedural ground texture: olive grass, dry patches, dirt, blade speckles */
       const gc = document.createElement('canvas'); gc.width = gc.height = 512;
       const gg = gc.getContext('2d');
@@ -205,9 +205,9 @@
       }
       const gtex = new THREE.CanvasTexture(gc);
       if (THREE.SRGBColorSpace) gtex.colorSpace = THREE.SRGBColorSpace;
-      gtex.wrapS = gtex.wrapT = THREE.RepeatWrapping; gtex.repeat.set(90, 90);
+      gtex.wrapS = gtex.wrapT = THREE.RepeatWrapping; gtex.repeat.set(.288, .288);
       ground.material.map = gtex;
-      ground.receiveShadow = true;
+      ground.receiveShadow = true;horizonGround=new THREE.Mesh(new THREE.PlaneGeometry(500,500),new THREE.MeshLambertMaterial({map:gtex,depthWrite:false}));horizonGround.rotation.x=-Math.PI/2;horizonGround.renderOrder=-.5;scene.add(horizonGround);
 
       /* Original facade atlas. Four plaster/storefront treatments, baked
          balcony rails and rooftop surfaces. No external imagery or brands. */
@@ -293,6 +293,11 @@
         for (let k = 0; k < 4; k++) { cx0 += (rrnd() - 0.5) * 30; cy0 += (rrnd() - 0.5) * 30; rg.lineTo(cx0, cy0); }
         rg.stroke();
       }
+      const unmarkedCanvas=document.createElement('canvas');unmarkedCanvas.width=unmarkedCanvas.height=128;unmarkedCanvas.getContext('2d').drawImage(rc,0,0);const unmarkedTex=new THREE.CanvasTexture(unmarkedCanvas);unmarkedTex.colorSpace=THREE.SRGBColorSpace;unmarkedTex.wrapS=unmarkedTex.wrapT=THREE.RepeatWrapping;
+      shuttleLane=new THREE.InstancedMesh(new THREE.BoxGeometry(TILE,.07,TILE),new THREE.MeshLambertMaterial({map:unmarkedTex}),MAXI);shuttleLane.visible=false;
+      const roadData=window.NexoraShuttleRoad;if(roadData){const geo=new THREE.BufferGeometry(),positions=new Float32Array(roadData.triangles),uv=[];for(let i=0;i<positions.length;i+=3)uv.push(positions[i]/3,positions[i+2]/3);geo.setAttribute('position',new THREE.BufferAttribute(positions,3));geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));geo.computeVertexNormals();shuttleSurface=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({map:unmarkedTex,side:THREE.DoubleSide}));shuttleSurface.receiveShadow=true;scene.add(shuttleSurface);
+      const edgeVertices=[];for(const ring of roadData.edges)for(let i=1;i<ring.length;i++){const a=ring[i-1],b=ring[i],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz),ox=-dz/len*.035,oz=dx/len*.035;for(const [x,z]of [[a[0]+ox,a[1]+oz],[b[0]+ox,b[1]+oz],[b[0]-ox,b[1]-oz],[a[0]+ox,a[1]+oz],[b[0]-ox,b[1]-oz],[a[0]-ox,a[1]-oz]])edgeVertices.push(x,.091,z);}const eg=new THREE.BufferGeometry();eg.setAttribute('position',new THREE.Float32BufferAttribute(edgeVertices,3));eg.computeVertexNormals();scene.add(new THREE.Mesh(eg,new THREE.MeshBasicMaterial({color:0xa6a18a,side:THREE.DoubleSide})));}
+
       rg.fillStyle = 'rgba(214,210,196,0.75)'; rg.fillRect(0, 3, 128, 3); rg.fillRect(0, 122, 128, 3); // edge lines
       const rtex = new THREE.CanvasTexture(rc);
       if (THREE.SRGBColorSpace) rtex.colorSpace = THREE.SRGBColorSpace;
@@ -419,7 +424,7 @@
     const vkey = v.x0 + ':' + v.y0 + ':' + (st.floor | 0);
     if (vkey === rebuild._key) { rebuildDynamic(st); return; } /* static instanced tiles only move with the view window */
     rebuild._key = vkey;
-    let wi = 0, ri = 0, rvi = 0, di = 0, ti = 0, si = 0, ki = 0, pi = 0;
+    let wi = 0, ri = 0, rvi = 0, di = 0, ti = 0, si = 0, ki = 0, pi = 0, sli=0, gi=0;
     const m = _m4(), c = new THREE.Color();
     const rows = v.tiles;
     const codeAt = (x, y) => { // road-neighbour probe inside the view window; -1 outside
@@ -433,6 +438,7 @@
       for (let col = 0; col < line.length; col++) {
         const code = line.charCodeAt(col) - 48;
         const gx = v.x0 + col, gy = v.y0 + row;
+        m.makeTranslation(gx*TILE,-.04,gy*TILE);ground.setMatrixAt(gi++,m);
         if (code === 0 && wi < MAXI) { // building block, slight per-block tint + height variety
           const t = hash2(gx, gy);
           const hs = 0.75 + t * 0.9; // 0.75x-1.65x WALLH; bullets/camera stay below the lowest block
@@ -449,6 +455,7 @@
               WALLH * hs + 0.27 * ts, gy * TILE + (hash2(gx + 6, gy + 6) - 0.5) * 0.7);
             tanks.setMatrixAt(ki, m); ki++;
           }
+        } else if(v.lane?.[row]?.[col]==='1'&&sli<MAXI){m.makeTranslation(gx*TILE,.035,gy*TILE);shuttleLane.setMatrixAt(sli++,m);
         } else if ((code === 5 || code === 6) && (ri < MAXI || rvi < MAXI)) {
           // orientation from road neighbours: north-south streets get the rotated asphalt
           const lr = codeAt(col - 1, row) === 5 || codeAt(col - 1, row) === 6 || codeAt(col + 1, row) === 5 || codeAt(col + 1, row) === 6;
@@ -496,6 +503,7 @@
         }
       }
     }
+    ground.count=gi;ground.instanceMatrix.needsUpdate=true;shuttleLane.count=sli;shuttleLane.instanceMatrix.needsUpdate=true;
     walls.count = wi; shops.count = si; roads.count = ri; roadsV.count = rvi; dashes.count = di;
     tanks.count = ki; poles.count = pi; lampHeads.count = pi;
     trunks.count = ti; canopies.count = ti * 3;
@@ -516,7 +524,39 @@
   }
 
   // per-frame movers only: players, mobs, tracers, beacons (static tiles rebuild on view change)
+  function updateBus(st) {
+    const T=window.__THREE,b=st.bus;
+    if(!busGroup){busGroup=new T.Group();scene.add(busGroup);const red=new T.MeshLambertMaterial({color:0x94362e}),cream=new T.MeshLambertMaterial({color:0xe0d1a7}),dark=new T.MeshLambertMaterial({color:0x222b29}),glass=new T.MeshLambertMaterial({color:0x88adb0,transparent:true,opacity:.16,depthWrite:false});
+      const part=(w,h,d,x,y,z,mat)=>{const m=new T.Mesh(new T.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);m.castShadow=true;busGroup.add(m);};
+
+      const shadowCanvas=document.createElement('canvas');shadowCanvas.width=shadowCanvas.height=64;const sc=shadowCanvas.getContext('2d'),sg=sc.createRadialGradient(32,32,3,32,32,32);sg.addColorStop(0,'rgba(0,0,0,.72)');sg.addColorStop(.45,'rgba(0,0,0,.48)');sg.addColorStop(1,'rgba(0,0,0,0)');sc.fillStyle=sg;sc.fillRect(0,0,64,64);const shadowMat=new T.MeshBasicMaterial({map:new T.CanvasTexture(shadowCanvas),transparent:true,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-2});const blob=(w,h,x,z)=>{const m=new T.Mesh(new T.PlaneGeometry(w,h),shadowMat);m.rotation.x=-Math.PI/2;m.position.set(x,.026,z);busGroup.add(m);};blob(3,6.5,0,0);for(const x of [-1.1,1.1])for(const z of [-2.05,2.05])blob(.95,1.1,x,z);
+      part(2.05,.35,6.4,0,.62,0,dark);part(1.96,.1,6.2,0,.93,0,dark);part(2.15,.75,6.5,0,1.13,0,red);part(2.2,.22,6.6,0,2.83,0,cream);
+      for(const x of [-1.04,1.04]){for(let z=-3.1;z<=3.2;z+=1.05)part(.09,1.0,.09,x,2.18,z,cream);part(.03,1,6.2,x,2.18,0,glass);}
+
+      for(const z of [-3.23,3.23]){part(2.1,.12,.15,0,.78,z,cream);part(2.12,.12,.04,0,1.48,z,cream);for(const x of [-.75,.75])part(.34,.18,.08,x,1.18,z,new T.MeshBasicMaterial({color:z<0?0xf9e6b4:0xae3b26}));}
+      part(2.1,.94,.04,0,2.18,3.2,glass);part(2.1,.94,.04,0,2.18,-3.2,glass);
+      for(const x of [-1.1,1.1])for(const z of [-2.05,2.05]){const w=new T.Mesh(new T.CylinderGeometry(.44,.44,.19,16),dark);w.rotation.z=Math.PI/2;w.position.set(x,.44,z);busGroup.add(w);const hub=new T.Mesh(new T.CylinderGeometry(.19,.19,.205,12),cream);hub.rotation.z=Math.PI/2;hub.position.copy(w.position);busGroup.add(hub);}
+      const seatMat=new T.MeshLambertMaterial({color:0x38504a}),railMat=new T.MeshLambertMaterial({color:0xa89f70});for(const x of [-.54,.54])for(let z=-1.7;z<=1.8;z+=.85){part(.7,.18,.6,x,1.22,z,seatMat);part(.7,.44,.13,x,1.47,z-.27,seatMat);part(.52,.10,.08,x,1.72,z-.27,railMat);}for(const x of [-.28,.28]){part(.035,.035,5.1,x,2.56,0,railMat);for(const z of [-2.4,2.4])part(.035,1.6,.035,x,1.75,z,railMat);}
+      const c=document.createElement('canvas');c.width=1024;c.height=160;const ctx=c.getContext('2d');ctx.fillStyle='#1b2624';ctx.fillRect(0,0,1024,160);ctx.fillStyle='#fff0bb';ctx.textAlign='center';ctx.font='bold 56px sans-serif';ctx.fillText('KSRTC / GAME SHUTTLE',512,68);ctx.font='30px sans-serif';ctx.fillText('SIMULATED ROUTE / PLAYERS ONLY',512,121);const tex=new T.CanvasTexture(c);tex.colorSpace=T.SRGBColorSpace;const mat=new T.MeshBasicMaterial({map:tex});for(const z of [-3.263,3.263]){const m=new T.Mesh(new T.PlaneGeometry(1.92,.3),mat);m.position.set(0,2.61,z);if(z<0)m.rotation.y=Math.PI;busGroup.add(m);}
+    }
+    if(!busGroup.userData.merged){
+      const byMat=new Map();for(const mesh of [...busGroup.children]){mesh.updateMatrix();let geo=mesh.geometry.index?mesh.geometry.toNonIndexed():mesh.geometry.clone();geo.applyMatrix4(mesh.matrix);if(!byMat.has(mesh.material))byMat.set(mesh.material,[]);byMat.get(mesh.material).push(geo);mesh.geometry.dispose();}
+      busGroup.clear();for(const [mat,list]of byMat){const geo=new T.BufferGeometry();for(const name of ['position','normal','uv']){let size=0;for(const g of list)size+=g.attributes[name].array.length;const v=new Float32Array(size);let off=0;for(const g of list){v.set(g.attributes[name].array,off);off+=g.attributes[name].array.length;}geo.setAttribute(name,new T.BufferAttribute(v,name==='uv'?2:3));}for(const g of list)g.dispose();const mesh=new T.Mesh(geo,mat);mesh.castShadow=true;busGroup.add(mesh);}busGroup.userData.merged=true;
+    }
+    busGroup.visible=!!b;if(!b)return;busGroup.position.set(b.x*TILE,.085,b.y*TILE);busGroup.rotation.y=Math.atan2(b.dx,b.dy);
+  }
+
+  function updateHealthProps(st) {
+    const T=window.__THREE;
+    if(!medkitGroup){medkitGroup=new T.Group();scene.add(medkitGroup);medkitGeo=new T.BoxGeometry(.58,.36,.34);
+      const c=document.createElement('canvas');c.width=c.height=128;const x=c.getContext('2d');x.fillStyle='#e8eadf';x.fillRect(0,0,128,128);x.fillStyle='#3e7152';x.fillRect(49,22,30,84);x.fillRect(22,49,84,30);const tex=new T.CanvasTexture(c);tex.colorSpace=T.SRGBColorSpace;medkitMat=new T.MeshLambertMaterial({map:tex});}
+    const key=(st.medkits||[]).map(k=>k.id+':'+k.x+','+k.y).join('|');
+    if(key!==medkitGroup.userData.key){medkitGroup.clear();medkitGroup.userData.key=key;for(const k of st.medkits||[]){const box=new T.Mesh(medkitGeo,medkitMat);box.position.set(k.x*TILE,.22,k.y*TILE);box.castShadow=true;medkitGroup.add(box);}}
+
+  }
+
   function rebuildDynamic(st) {
+    updateHealthProps(st);updateBus(st);
     const THREE = window.__THREE;
     // other players: stylized characters (capsule fallback), NO floating names
     othersGroup.clear();
@@ -550,7 +590,7 @@
         const k = Math.min(1, dynDt * 12);
         av.sx += (o.x * TILE - av.sx) * k; av.sy += (o.y * TILE - av.sy) * k;
         av.mv += ((moved > 0.002 ? 1 : 0) - av.mv) * Math.min(1, dynDt * 10);
-        if (av.anim) { av.anim.uPhase.value = av.phase; av.anim.uMove.value = av.mv; }
+        if (av.anim) { av.anim.uPhase.value = av.phase; av.anim.uMove.value = o.riding?0:av.mv; }
       }
       if (o.j && !av.jt) av.jt = performance.now();
       if (!o.j) av.jt = 0;
@@ -560,7 +600,7 @@
       const fx = (o.f && o.f[0]) || 0, fy = (o.f && o.f[1]) || 0;
       if (fx || fy) g.rotation.y = Math.atan2(fx, fy);
       g.scale.set(1, 1, 1);
-      showStance(g, o.st, !!o.dead);
+      showStance(g, o.riding?'crouch':o.st, !!o.dead);
       if (o.dead) {
         g.rotation.x = -Math.PI / 2;
         g.position.y = 0.15;
@@ -580,7 +620,7 @@
         g.position.y = 0.03 + bob + joff;
         g.rotation.z = moved > 0.002 ? Math.sin(av.phase) * 0.05 : 0;
       }
-      
+      if(o.riding){g.position.y=.9;g.rotation.x=0;g.rotation.z=0;}
       othersGroup.add(g);
     }
     for (const id of avatars.keys()) if (!seenIds.has(id)) avatars.delete(id);
@@ -752,6 +792,8 @@
     resize();
     rebuild(st);
     const me = st.you;
+    // Keep the passenger's chosen look angle relative to the turning vehicle.
+    if(st.riding&&st.bus){const a=Math.atan2(st.bus.dx,-st.bus.dy);yaw=lastRideYaw===null?a:yaw+Math.atan2(Math.sin(a-lastRideYaw),Math.cos(a-lastRideYaw));lastRideYaw=a;}else lastRideYaw=null;
     /* velocity extrapolation from the last snapshot change, capped small */
     if (stX === null || me.x !== stX || me.y !== stY) {
       const dtt = stT ? Math.max(0.05, (nowMs - stT) / 1000) : 0.1;
@@ -776,7 +818,7 @@
     if (!me.j) selfJt = 0;
     const sje = selfJt ? Math.min((performance.now() - selfJt) / 600, 1) : 0;
     const sjoff = selfJt ? Math.sin(Math.PI * sje) * 0.7 : 0;
-    ground.position.set(me.x * TILE, 0, me.y * TILE);
+
     /* dusk rig follows the player: sun shadow box, sky dome, sun glow */
     {
       const px = me.x * TILE, pz = me.y * TILE;
@@ -788,11 +830,12 @@
       sunSprite.position.set(px + SUN_DIR.x * sunR, SUN_DIR.y * sunR, pz + SUN_DIR.z * sunR);
       sunSprite.scale.set(cam.far * 0.13, cam.far * 0.13, 1);
     }
-    const eyeTgt = eyeH(me.st);
+    horizonGround.position.set(me.x*TILE,-.08,me.y*TILE);
+    const eyeTgt = st.riding?1.15:eyeH(me.st);
     if (eyeCur === null) eyeCur = eyeTgt;
     eyeCur += (eyeTgt - eyeCur) * Math.min(1, dt * 10); // stance changes ease instead of snapping
     const eyeNow = eyeCur;
-    cam.position.set(smX, eyeNow + sjoff, smY);
+    cam.position.set(smX, eyeNow + sjoff + (st.riding?.9:0), smY);
     const at = adsOn ? 1 : 0;
     if (adsT !== at) {
       adsT += (at - adsT) * 0.35;
@@ -805,7 +848,7 @@
         GUN_HIP[0] + (GUN_ADS[0] - GUN_HIP[0]) * adsT,
         GUN_HIP[1] + (GUN_ADS[1] - GUN_HIP[1]) * adsT,
         GUN_HIP[2] + (GUN_ADS[2] - GUN_HIP[2]) * adsT);
-      gun.visible = adsT < 0.92 && !freeLooking;
+      gun.visible = adsT < 0.92 && !freeLooking && !st.riding;
     }
     cam.rotation.set(0, 0, 0, 'YXZ');
     cam.rotation.y = -(yaw+freeYaw); // world z+ is map y+; matches aimVec so camera forward = (sin yaw, -cos yaw)
@@ -836,12 +879,13 @@
       selfPhase += smoved * 9; selfLx = me.x; selfLy = me.y;
       if (selfAnim) {
         selfAnim.uPhase.value = selfPhase;
-        selfAnim.uMove.value += ((smoved > 0.002 ? 1 : 0) - selfAnim.uMove.value) * Math.min(1, dt * 10);
+        selfAnim.uMove.value += ((!st.riding&&smoved > 0.002 ? 1 : 0) - selfAnim.uMove.value) * Math.min(1, dt * 10);
       }
       selfAv.position.set(smX, 0.03 + sjoff + (smoved > 0.002 ? Math.abs(Math.sin(selfPhase)) * 0.05 : 0), smY);
       selfAv.rotation.y = Math.atan2(Math.sin(yaw), -Math.cos(yaw)); // same facing convention as other avatars: map forward (sin yaw, -cos yaw)
       selfAv.scale.set(1, 1, 1); selfAv.rotation.x = 0;
-      showStance(selfAv, me.st, false);
+      showStance(selfAv, st.riding?'crouch':me.st, false);
+      if(st.riding)selfAv.position.y=.9;
       if (me.st === 'prone') { selfAv.position.y = sjoff * 0.45; }
       // boom: pull camera back along its own -forward, clamp before walls, ease changes
       const THREE = window.__THREE;
@@ -853,7 +897,7 @@
       boomCur += (boom - boomCur) * Math.min(1, dt * 7); // camera glides out/in on switch instead of snapping
       cam.position.set(
         smX - dir.x * boomCur,
-        Math.max(0.3, eyeNow + sjoff * 0.45 - dir.y * boomCur + 0.18), // TPP camera follows the hop partially, so the avatar reads against the scene
+        Math.max(0.3, eyeNow + sjoff * 0.45 - dir.y * boomCur + 0.18 + (st.riding?.9:0)), // TPP camera follows the hop partially, so the avatar reads against the scene
         smY - dir.z * boomCur);
       if (gun) gun.visible = false;
     } else if (selfAv) {
