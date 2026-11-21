@@ -8,9 +8,11 @@
   let shops = null, shotBlocked = false, shotBlockDist = 0;
   let walls = null, roads = null, dashes = null, ground = null, trunks = null, canopies = null;
   let roadsV = null, tanks = null, poles = null, lampHeads = null, sunLight = null, skyDome = null, sunSprite = null;
-  const SUN_DIR = { x: -0.55, y: 0.17, z: 0.42 }; /* low warm dusk sun; long shadows, occluded by buildings */
+  const SUN_DIR = { x: -0.55, y: 0.46, z: 0.42 }; /* low warm dusk sun; long shadows, occluded by buildings */
   let othersGroup = null, mobGroup = null, projGroup = null, beaconGroup = null;
   let yaw = 0, pitch = 0, canvasEl = null, lean = 0;
+  let freeLooking=false,freeYaw=0,freePitch=0;
+  function setFreeLook(on){freeLooking=!!on;freeYaw=0;freePitch=0;}
   const STANCE_EYE_H = { stand: 1.55, crouch: 1.05, prone: 0.55 };
   const eyeH = (st) => STANCE_EYE_H[st] || 1.55;
   function setLean(l) { lean = Math.max(-1, Math.min(1, l | 0)); }
@@ -21,23 +23,64 @@
   /* gun viewmodel: original box-model rifle, gunmetal with one amber sight accent */
   const GUN_HIP = [0.23, -0.185, -0.42], GUN_ADS = [0, -0.128, -0.36];
   function buildGun(THREE) {
-    const g = new THREE.Group();
-    const metal = new THREE.MeshLambertMaterial({ color: 0x6a7280, emissive: 0x11141a });
-    const dark = new THREE.MeshLambertMaterial({ color: 0x424854, emissive: 0x0c0e12 });
-    const amber = new THREE.MeshLambertMaterial({ color: 0xd9a23a });
-    const add = (w, h, d, mat, x, y, z) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-      m.position.set(x, y, z); g.add(m); return m;
-    };
-    add(0.07, 0.10, 0.40, metal, 0, 0, 0);            // receiver
-    add(0.032, 0.032, 0.30, dark, 0, 0.012, -0.32);   // barrel
-    add(0.05, 0.16, 0.07, dark, 0, -0.11, 0.06);      // magazine
-    add(0.06, 0.07, 0.16, dark, 0, -0.02, 0.24);      // stock
-    add(0.024, 0.034, 0.05, amber, 0, 0.066, -0.10);  // amber sight
-    g.rotation.y = 0.05;
-    g.scale.setScalar(0.5);
-    g.position.set(GUN_HIP[0], GUN_HIP[1], GUN_HIP[2]);
-    return g;
+    const g=new THREE.Group(),parts=new Map();
+    const metal=new THREE.MeshStandardMaterial({color:0x727c83,roughness:.52,metalness:.35,emissive:0x172127,emissiveIntensity:.4});
+    const black=new THREE.MeshStandardMaterial({color:0x333d3c,roughness:.8,metalness:.1,emissive:0x101817,emissiveIntensity:.3});
+    const edge=new THREE.MeshStandardMaterial({color:0x737b79,roughness:.4,metalness:.82});
+    const rubber=new THREE.MeshStandardMaterial({color:0x272c28,roughness:.95,metalness:0});
+    const skin=new THREE.MeshLambertMaterial({color:0xa47652});
+    const add=(geometry,mat,x,y,z,rx=0,ry=0,rz=0)=>{const m=new THREE.Matrix4(),q=new THREE.Quaternion().setFromEuler(new THREE.Euler(rx,ry,rz));m.compose(new THREE.Vector3(x,y,z),q,new THREE.Vector3(1,1,1));geometry.applyMatrix4(m);if(!parts.has(mat))parts.set(mat,[]);parts.get(mat).push(geometry.toNonIndexed());geometry.dispose();};
+    const box=(w,h,d,mat,x,y,z,rx=0,ry=0,rz=0)=>add(new THREE.BoxGeometry(w,h,d),mat,x,y,z,rx,ry,rz);
+    const cyl=(r,rb,h,mat,x,y,z,rx=Math.PI/2)=>add(new THREE.CylinderGeometry(r,rb,h,12),mat,x,y,z,rx);
+    // Original carbine silhouette: upper/lower receiver, vented handguard,
+    // cylindrical barrel/muzzle, adjustable stock and separate controls.
+    box(.085,.095,.31,metal,0,0,0);
+    box(.072,.047,.22,black,0,-.061,.015);
+    cyl(.036,.036,.29,metal,0,.032,-.015);
+    box(.071,.07,.20,black,0,.002,-.255);
+    for(let i=0;i<7;i++){
+      box(.079,.008,.014,metal,0,.042,-.18-i*.024);
+      box(.008,.012,.016,edge,.039,-.002,-.18-i*.024);
+      box(.008,.012,.016,metal,-.039,-.002,-.18-i*.024);
+    }
+    cyl(.015,.018,.24,metal,0,.012,-.446);
+    cyl(.022,.022,.062,black,0,.012,-.59);
+    cyl(.023,.023,.009,edge,0,.012,-.617);
+    cyl(.012,.012,.012,black,0,.012,-.625);
+    box(.012,.047,.018,black,0,.052,-.44);
+    box(.022,.012,.022,edge,0,.078,-.44);
+    for(let i=0;i<12;i++)box(.058,.01,.009,black,0,.084,.116-i*.019);
+    // Raised rear iron sight, with a clear central notch.
+    box(.016,.039,.018,black,-.022,.105,.116);box(.016,.039,.018,black,.022,.105,.116);
+    box(.058,.009,.018,black,0,.085,.116);
+    box(.011,.035,.01,edge,0,.104,-.102);
+    box(.028,.01,.025,black,0,.085,-.1);
+    // Magazine curves forward slightly; panels give it weight without a box-only profile.
+    box(.048,.11,.073,black,0,-.125,-.045,-.12);
+    box(.048,.07,.078,metal,0,-.211,-.032,-.25);
+    for(const x of [-.025,.025])for(let i=0;i<4;i++)box(.003,.145,.006,edge,x,-.163,-.06+i*.015,-.18);
+    box(.054,.014,.082,rubber,0,-.245,-.024,-.25);
+    // Pistol grip, open trigger-guard frame and small mechanical details.
+    box(.049,.105,.052,rubber,0,-.139,.105,-.3);
+    box(.052,.008,.085,black,0,-.109,.025);box(.009,.046,.009,black,0,-.088,-.015);
+    box(.008,.035,.009,edge,0,-.083,.024,-.25);
+    box(.009,.019,.057,edge,.046,.005,.026);box(.009,.022,.026,black,-.046,-.03,.05);
+    cyl(.009,.009,.065,black,.067,-.015,.058,0);
+    // Buffer tube and triangular adjustable stock, not a solid rectangular slab.
+    cyl(.023,.023,.16,metal,0,.018,.237);
+    box(.058,.046,.15,black,0,.01,.29);
+    box(.052,.055,.075,black,0,-.013,.37);
+    box(.048,.025,.105,black,0,-.052,.326,.34);
+    box(.062,.133,.025,rubber,0,-.016,.413,-.1);
+    // Original gloved hands and sleeves visible from the first-person view.
+    const glove=new THREE.MeshLambertMaterial({color:0x555440});
+    add(new THREE.SphereGeometry(.036,10,7),glove,.028,-.12,.1);
+    add(new THREE.SphereGeometry(.034,10,7),glove,-.014,-.062,-.265);
+    function sleeve(from,to){const a=new THREE.Vector3(...from),b=new THREE.Vector3(...to),dir=b.clone().sub(a),mid=a.clone().add(b).multiplyScalar(.5);const geom=new THREE.CylinderGeometry(.031,.052,dir.length(),10);geom.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),dir.normalize()));add(geom,glove,mid.x,mid.y,mid.z);}
+    sleeve([.32,-.45,.41],[.028,-.12,.1]);sleeve([-.35,-.45,.23],[-.014,-.062,-.265]);
+    // Merge by material so this detailed viewmodel remains a handful of draws.
+    for(const [mat,list] of parts){const merged=new THREE.BufferGeometry();for(const key of ['position','normal','uv']){let count=0;for(const geom of list)count+=geom.attributes[key].array.length;const array=new Float32Array(count);let offset=0;for(const geom of list){array.set(geom.attributes[key].array,offset);offset+=geom.attributes[key].array.length;}merged.setAttribute(key,new THREE.BufferAttribute(array,key==='uv'?2:3));}for(const geom of list)geom.dispose();const mesh=new THREE.Mesh(merged,mat);g.add(mesh);}
+    g.rotation.y=.05;g.scale.setScalar(.5);g.position.set(...GUN_HIP);return g;
   }
   function setAds(on) {
     on = !!on;
@@ -84,22 +127,19 @@
       const skc = document.createElement('canvas'); skc.width = 1024; skc.height = 512;
       const skg = skc.getContext('2d');
       const grad = skg.createLinearGradient(0, 0, 0, 512);
-      grad.addColorStop(0, '#1c2436');
-      grad.addColorStop(0.40, '#2e3850');
-      grad.addColorStop(0.56, '#45485a');
-      grad.addColorStop(0.68, '#7d5f3a');
-      grad.addColorStop(0.78, '#9c6a32');
-      grad.addColorStop(0.85, '#6b4e2e');
-      grad.addColorStop(1, '#3a332a');
+      grad.addColorStop(0, '#537c99');
+      grad.addColorStop(0.40, '#7a9eaf');
+      grad.addColorStop(0.56, '#a4b7b8');
+      grad.addColorStop(0.68, '#b3b6a6');
+      grad.addColorStop(0.78, '#c1b79c');
+      grad.addColorStop(0.85, '#b4aa92');
+      grad.addColorStop(1, '#8e988a');
       skg.fillStyle = grad; skg.fillRect(0, 0, 1024, 512);
       let skseed = 7;
       const skrnd = () => (skseed = (skseed * 16807) % 2147483647) / 2147483647;
-      for (let i = 0; i < 14; i++) { // thin dusk cloud streaks, warm-lit from below
-        const cy = 180 + skrnd() * 150, cw = 40 + skrnd() * 110, ch = 2 + skrnd() * 4, cx0 = skrnd() * 1024;
-        skg.fillStyle = 'rgba(30,34,46,0.35)';
-        skg.beginPath(); skg.ellipse(cx0, cy, cw, ch, 0, 0, 7); skg.fill();
-        skg.fillStyle = 'rgba(214,158,92,0.16)';
-        skg.beginPath(); skg.ellipse(cx0, cy + ch * 0.7, cw * 0.9, ch * 0.5, 0, 0, 7); skg.fill();
+      for (let i=0;i<10;i++) {
+        const cx=skrnd()*1024,cy=170+skrnd()*120,cw=25+skrnd()*50,ch=3+skrnd()*6;
+        skg.save();skg.translate(cx,cy);skg.scale(cw,ch);const cloud=skg.createRadialGradient(0,0,.05,0,0,1);cloud.addColorStop(0,'rgba(245,245,231,.15)');cloud.addColorStop(1,'rgba(245,245,231,0)');skg.fillStyle=cloud;skg.fillRect(-1,-1,2,2);skg.restore();
       }
       const skTex = new THREE.CanvasTexture(skc);
       if (THREE.SRGBColorSpace) skTex.colorSpace = THREE.SRGBColorSpace;
@@ -120,7 +160,7 @@
       sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: sunTex, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, transparent: true }));
       sunSprite.scale.set(70, 70, 1);
       scene.add(sunSprite);
-      scene.fog = new THREE.Fog(0x4a4136, 14, 60);
+      scene.fog = new THREE.Fog(0x919e99, 18, 65);
       cam = new THREE.PerspectiveCamera(74, 1, 0.05, 90);
       scene.add(cam);
       gun = buildGun(THREE);
@@ -129,8 +169,8 @@
       canvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
       canvasEl.addEventListener('pointerdown', (e) => { if (e.button === 2) setAds(true); });
       canvasEl.addEventListener('pointerup', (e) => { if (e.button === 2) setAds(false); });
-      scene.add(new THREE.HemisphereLight(0x93a7c9, 0x5f5442, 1.0));
-      sunLight = new THREE.DirectionalLight(0xffcb8f, 2.5);
+      scene.add(new THREE.HemisphereLight(0xc2daea, 0x7d8062, 1.7));
+      sunLight = new THREE.DirectionalLight(0xffe1b0, 2.0);
       sunLight.castShadow = true;
       sunLight.shadow.mapSize.set(2048, 2048);
       sunLight.shadow.camera.left = -30; sunLight.shadow.camera.right = 30;
@@ -169,73 +209,70 @@
       ground.material.map = gtex;
       ground.receiveShadow = true;
 
-      /* original procedural facade v2: pale plaster, vertical shade gradient, framed windows
-         with sills, some warm-lit, grime streaks, parapet cap */
-      const fc = document.createElement('canvas'); fc.width = 128; fc.height = 256;
-      const fg = fc.getContext('2d');
-      const fgrad = fg.createLinearGradient(0, 0, 0, 256);
-      fgrad.addColorStop(0, '#d9d2c5'); fgrad.addColorStop(0.75, '#c3bbae'); fgrad.addColorStop(1, '#a89e8e');
-      fg.fillStyle = fgrad; fg.fillRect(0, 0, 128, 256);
-      fg.fillStyle = '#8e8477'; fg.fillRect(0, 0, 128, 10); // parapet cap
-      fg.fillStyle = 'rgba(0,0,0,0.22)'; fg.fillRect(0, 10, 128, 3);
-      fg.fillStyle = 'rgba(96,86,72,0.5)'; fg.fillRect(0, 238, 128, 18); // plinth
-      let fseed = 29;
-      const frnd = () => (fseed = (fseed * 16807) % 2147483647) / 2147483647;
-      for (let i = 0; i < 130; i++) { // plaster noise
-        fg.fillStyle = frnd() < 0.5 ? 'rgba(255,255,255,0.05)' : 'rgba(70,60,48,0.06)';
-        fg.beginPath(); fg.arc(frnd() * 128, frnd() * 256, 1 + frnd() * 4, 0, 7); fg.fill();
+      /* Original facade atlas. Four plaster/storefront treatments, baked
+         balcony rails and rooftop surfaces. No external imagery or brands. */
+      function facadeAtlas(shop) {
+        const c=document.createElement('canvas');c.width=2048;c.height=1024;
+        const g=c.getContext('2d');let seed=shop?289:113;
+        const rnd=()=>((seed=(seed*16807)%2147483647)/2147483647);
+        const shades=shop?['#d3c2a5','#bad0ca','#d2c6bc','#d3c9a7']:['#e6d8be','#c9d6cd','#d6c4b8','#dedccf'];
+        for(let v=0;v<4;v++){
+          const ox=v*512;
+          // Atlas lower half in UV coordinates is the separate flat roof.
+          g.fillStyle=['#8f9187','#9d9c8d','#96988a','#9e9d92'][v];g.fillRect(ox,512,512,512);
+          for(let i=0;i<1800;i++){g.fillStyle=rnd()<.5?'#ffffff09':'#202d2610';g.fillRect(ox+rnd()*512,512+rnd()*512,1+rnd()*8,1+rnd()*8);}
+          g.strokeStyle='#5c675c55';g.lineWidth=2;
+          for(let j=0;j<4;j++){g.beginPath();g.moveTo(ox,512+j*130);g.lineTo(ox+512,512+j*130);g.stroke();}
+          const gr=g.createLinearGradient(ox,0,ox+512,512);gr.addColorStop(0,shades[v]);gr.addColorStop(.6,shades[v]);gr.addColorStop(1,'#9e9d8c');g.fillStyle=gr;g.fillRect(ox,0,512,512);
+          for(let i=0;i<4000;i++){g.fillStyle=rnd()<.5?'#ffffff0a':'#514c430b';g.fillRect(ox+rnd()*512,rnd()*512,1+rnd()*5,1+rnd()*3);}
+          // Parapet and cast-shadow band, then concrete floor ledges.
+          g.fillStyle='#c4c0ad';g.fillRect(ox,0,512,13);g.fillStyle='#454e3c50';g.fillRect(ox,13,512,9);
+          for(let f=0;f<3;f++){
+            const yy=34+f*124;
+            g.fillStyle='#b0af9d';g.fillRect(ox,yy+103,512,8);g.fillStyle='#575c4a44';g.fillRect(ox,yy+111,512,5);
+            for(let col=0;col<3;col++){
+              const xx=ox+33+col*162,ww=v===1?105:88,hh=76;
+              g.fillStyle='#4c534d';g.fillRect(xx-4,yy-4,ww+8,hh+8);
+              const glass=g.createLinearGradient(xx,yy,xx+ww,yy+hh);glass.addColorStop(0,'#758b8d');glass.addColorStop(.28,'#4e6469');glass.addColorStop(.35,'#a7b5b2');glass.addColorStop(.4,'#34494c');glass.addColorStop(1,'#192e32');
+              g.fillStyle=glass;g.fillRect(xx,yy,ww,hh);
+              g.fillStyle='#d2d1bd';g.fillRect(xx+ww/2-2,yy,4,hh);g.fillRect(xx,yy+hh*.47,ww,3);
+              g.fillStyle='#f1e9cb55';g.fillRect(xx+8,yy+4,ww*.18,hh-8);
+              // Ventilated shutters and projecting balcony silhouettes vary.
+              if(v===2&&col!==1){g.fillStyle='#789b8c';g.fillRect(xx,yy,ww*.45,hh);g.strokeStyle='#384f48';g.lineWidth=2;for(let l=8;l<hh;l+=7){g.beginPath();g.moveTo(xx+3,yy+l);g.lineTo(xx+ww*.45-3,yy+l);g.stroke();}}
+              if(v===1||v===3){g.fillStyle='#e0dcc8';g.fillRect(xx-12,yy+hh-7,ww+24,18);g.fillStyle='#464e4180';g.fillRect(xx-12,yy+hh+11,ww+24,9);g.strokeStyle='#38473b';g.lineWidth=3;for(let l=0;l<7;l++){let bx=xx-8+l*(ww+16)/6;g.beginPath();g.moveTo(bx,yy+hh-26);g.lineTo(bx,yy+hh+3);g.stroke();}g.strokeRect(xx-10,yy+hh-26,ww+20,29);}
+              if(f===1&&col===0){g.fillStyle='#d7d6ca';g.fillRect(xx+ww-9,yy+51,33,25);g.strokeStyle='#7a8076';g.lineWidth=2;g.beginPath();g.arc(xx+ww+7,yy+63,9,0,7);g.stroke();}
+              g.fillStyle='#646d5030';for(let l=0;l<3;l++)g.fillRect(xx+l*30,yy+hh+21,7,7+rnd()*17);
+            }
+          }
+          if(shop){
+            g.fillStyle=['#294c46','#4c4551','#6b4e3c','#374b5c'][v];g.fillRect(ox+3,365,506,40);
+            g.fillStyle='#fff0c9';g.font='600 27px sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(['STORES','CAFE','MARKET','WORKSHOP'][v],ox+256,385);
+            const aw=['#ad6650','#577d6c','#bd9767','#5d7584'][v];for(let col=0;col<16;col++){g.fillStyle=col%2?aw:'#d7d3bd';g.fillRect(ox+col*32,407,32,20);}g.fillStyle='#243b3290';g.fillRect(ox,427,512,8);
+            for(let col=0;col<4;col++){
+              const xx=ox+10+col*126;g.fillStyle='#293e3c';g.fillRect(xx,437,113,66);
+              if(v===3){g.fillStyle='#8f9890';g.fillRect(xx+3,439,107,62);g.strokeStyle='#4f6158';for(let z=444;z<500;z+=6){g.beginPath();g.moveTo(xx+3,z);g.lineTo(xx+110,z);g.stroke();}}
+              else {const glass=g.createLinearGradient(xx,437,xx,503);glass.addColorStop(0,'#7d9995');glass.addColorStop(.4,'#3b5b58');glass.addColorStop(1,'#172d2b');g.fillStyle=glass;g.fillRect(xx+3,440,107,60);g.fillStyle='#dec49180';g.fillRect(xx+10,448,23,43);g.fillStyle='#e8dfbf';g.fillRect(xx+90,466,3,12);}
+            }
+          }else{g.fillStyle='#a1a38f';g.fillRect(ox,406,512,106);g.fillStyle='#35483c';g.fillRect(ox+207,416,98,96);g.fillStyle='#809484';g.fillRect(ox+215,424,82,88);g.fillStyle='#293e35';g.fillRect(ox+250,424,3,88);g.fillStyle='#d1bf87';g.fillRect(ox+279,467,4,13);}
+          g.fillStyle='#53634b';g.fillRect(ox,506,512,6);
+        }
+        const t=new THREE.CanvasTexture(c);if(THREE.SRGBColorSpace)t.colorSpace=THREE.SRGBColorSpace;
+        t.anisotropy=Math.min(4,renderer.capabilities.getMaxAnisotropy());
+        return t;
       }
-      for (let wy = 0; wy < 5; wy++) for (let wx = 0; wx < 3; wx++) {
-        const x0 = 14 + wx * 38, y0 = 26 + wy * 44, lit = frnd() < 0.22;
-        fg.fillStyle = '#6e6558'; fg.fillRect(x0 - 2, y0 - 2, 28, 34); // frame
-        const wgrad = fg.createLinearGradient(x0, y0, x0, y0 + 28);
-        if (lit) { wgrad.addColorStop(0, '#f0c06a'); wgrad.addColorStop(1, '#c98f3e'); }
-        else { wgrad.addColorStop(0, '#3a4152'); wgrad.addColorStop(1, '#232834'); }
-        fg.fillStyle = wgrad; fg.fillRect(x0, y0, 24, 28);
-        fg.fillStyle = 'rgba(255,255,255,0.12)'; fg.fillRect(x0 + 2, y0 + 2, 8, 24); // glass sheen
-        fg.fillStyle = '#8e8477'; fg.fillRect(x0 - 3, y0 + 30, 30, 3); // sill
-        fg.fillStyle = 'rgba(60,50,40,0.20)'; fg.fillRect(x0, y0 + 33, 24, 10 + frnd() * 8); // grime under sill
+      function atlasMaterial(shop){
+        const mat=new THREE.MeshLambertMaterial({color:0xffffff,map:facadeAtlas(shop)});
+        mat.onBeforeCompile=sh=>{sh.vertexShader=sh.vertexShader.replace('#include <uv_vertex>',`#include <uv_vertex>
+          #ifdef USE_MAP
+            float facadeVariant = floor(fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898,78.233))) * 43758.5453) * 4.0);
+            vMapUv.x = (clamp(vMapUv.x,0.002,0.998) + facadeVariant) * 0.25;
+            vMapUv.y = clamp(vMapUv.y,0.002,0.998) * 0.5 + (abs(normal.y) > 0.5 ? 0.0 : 0.5);
+          #endif`);};
+        mat.customProgramCacheKey=()=>shop?'original-shop-atlas-v1':'original-home-atlas-v1';
+        return mat;
       }
-      const ftex = new THREE.CanvasTexture(fc);
-      if (THREE.SRGBColorSpace) ftex.colorSpace = THREE.SRGBColorSpace;
-      /* shopfront variant v2: sign band, striped awning with scalloped edge, glass front, door */
-      const sc = document.createElement('canvas'); sc.width = 128; sc.height = 256;
-      const sg = sc.getContext('2d');
-      const sgrad = sg.createLinearGradient(0, 0, 0, 256);
-      sgrad.addColorStop(0, '#cfc6b8'); sgrad.addColorStop(1, '#a99f90');
-      sg.fillStyle = sgrad; sg.fillRect(0, 0, 128, 256);
-      sg.fillStyle = '#8e8477'; sg.fillRect(0, 0, 128, 10);
-      sg.fillStyle = 'rgba(0,0,0,0.22)'; sg.fillRect(0, 10, 128, 3);
-      let sseed = 47;
-      const srnd = () => (sseed = (sseed * 16807) % 2147483647) / 2147483647;
-      for (let wy = 0; wy < 3; wy++) for (let wx = 0; wx < 3; wx++) { // upper windows
-        const x0 = 16 + wx * 38, y0 = 24 + wy * 30, lit = srnd() < 0.2;
-        sg.fillStyle = '#6e6558'; sg.fillRect(x0 - 2, y0 - 2, 26, 24);
-        sg.fillStyle = lit ? '#eec06a' : '#333a48'; sg.fillRect(x0, y0, 22, 20);
-        sg.fillStyle = 'rgba(255,255,255,0.12)'; sg.fillRect(x0 + 2, y0 + 2, 7, 16);
-      }
-      sg.fillStyle = '#40372a'; sg.fillRect(0, 116, 128, 22); // sign band
-      sg.fillStyle = '#d9b23a';
-      for (let i = 0; i < 5; i++) sg.fillRect(12 + i * 23, 123, 14, 7); // abstract sign marks, no real text
-      for (let i = 0; i < 8; i++) { // striped awning
-        sg.fillStyle = i % 2 ? '#a8542c' : '#d8cdb4';
-        sg.fillRect(i * 16, 142, 16, 20);
-        sg.beginPath(); sg.arc(i * 16 + 8, 162, 8, 0, Math.PI); sg.fill();
-      }
-      sg.fillStyle = 'rgba(0,0,0,0.30)'; sg.fillRect(0, 168, 128, 4);
-      const ggrad = sg.createLinearGradient(0, 176, 0, 248); // glass front: dusk reflection
-      ggrad.addColorStop(0, '#5a6a80'); ggrad.addColorStop(0.5, '#39424f'); ggrad.addColorStop(1, '#232a33');
-      sg.fillStyle = ggrad; sg.fillRect(8, 176, 112, 72);
-      sg.fillStyle = 'rgba(214,158,92,0.30)'; sg.fillRect(14, 182, 40, 60); // warm interior glow
-      sg.fillStyle = 'rgba(190,220,235,0.25)'; sg.fillRect(62, 182, 26, 60);
-      sg.fillStyle = '#2b2f36'; sg.fillRect(96, 176, 4, 72); // door frame
-      sg.fillStyle = 'rgba(96,86,72,0.5)'; sg.fillRect(0, 248, 128, 8);
-      const stex = new THREE.CanvasTexture(sc);
-      if (THREE.SRGBColorSpace) stex.colorSpace = THREE.SRGBColorSpace;
-      walls = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, WALLH, TILE),
-        new THREE.MeshLambertMaterial({ color: 0xffffff, map: ftex }), MAXI);
-      shops = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, WALLH, TILE),
-        new THREE.MeshLambertMaterial({ color: 0xffffff, map: stex }), MAXI >> 2);
+      walls = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, WALLH, TILE),atlasMaterial(false), MAXI);
+      shops = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, WALLH, TILE),atlasMaterial(true), MAXI >> 2);
       /* asphalt v2: aggregate speckle, wheel-polish bands, painted edge lines.
          roadsV uses the same canvas rotated 90deg for north-south streets */
       const rc = document.createElement('canvas'); rc.width = rc.height = 128;
@@ -289,7 +326,7 @@
       /* low-poly trees: trunk + cone canopy, placed deterministically on open tiles in rebuild() */
       trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.08, 0.13, 1.0, 6),
         new THREE.MeshLambertMaterial({ color: 0x4a3a26 }), MAXT);
-      canopies = new THREE.InstancedMesh(new THREE.SphereGeometry(0.55, 7, 5),
+      canopies = new THREE.InstancedMesh(new THREE.SphereGeometry(0.55, 11, 8),
         new THREE.MeshLambertMaterial({ color: 0xffffff }), MAXT * 3);
       canopies.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAXT * 3), 3);
       trunks.frustumCulled = false; canopies.frustumCulled = false;
@@ -401,7 +438,7 @@
           const hs = 0.75 + t * 0.9; // 0.75x-1.65x WALLH; bullets/camera stay below the lowest block
           m.makeScale(1, hs, 1);
           m.setPosition(gx * TILE, WALLH * hs / 2, gy * TILE);
-          c.setHSL(0.09 + t * 0.03, 0.14 + t * 0.1, 0.42 + t * 0.16);
+          c.setHSL(0.11 + t * 0.03, 0.04 + t * 0.04, 0.77 + t * 0.14);
           const isShop = hash2(gy, gx) > 0.72 && si < (MAXI >> 2); // deterministic shopfront minority
           if (isShop) { shops.setMatrixAt(si, m); shops.setColorAt(si, c); si++; }
           else { walls.setMatrixAt(wi, m); walls.setColorAt(wi, c); wi++; }
@@ -533,7 +570,7 @@
         g.rotation.z = 0;
       } else if (o.st === 'crouch') {
         g.rotation.x = 0;
-        g.scale.set(1, 0.72, 1); // uniform squash (prior live behavior; mesh replacement parked)
+        g.scale.set(1, 1, 1); // crouch is bent in the pose shader
         const bob = moved > 0.002 ? Math.abs(Math.sin(av.phase)) * 0.03 : 0;
         g.position.y = 0.03 + bob + joff;
         g.rotation.z = moved > 0.002 ? Math.sin(av.phase) * 0.04 : 0;
@@ -543,6 +580,7 @@
         g.position.y = 0.03 + bob + joff;
         g.rotation.z = moved > 0.002 ? Math.sin(av.phase) * 0.05 : 0;
       }
+      
       othersGroup.add(g);
     }
     for (const id of avatars.keys()) if (!seenIds.has(id)) avatars.delete(id);
@@ -583,27 +621,62 @@
     return line.charCodeAt(gx) - 48;
   }
 
-  /* boneless-mesh walk cycle: per-avatar cloned materials get uPhase/uMove uniforms;
-     legs and hanging arms swing along local z in the vertex shader. Honest procedural
-     motion, not skinned animation - no joint claims. */
+  /* Procedural hip, knee and shoulder rotations for the original boneless model.
+     Crouch bends the legs instead of scaling the whole body. */
   function addWalkAnim(root, anim) {
+    anim.uCrouch = anim.uCrouch || { value: 0 };
     root.traverse((mm) => {
       if (!mm.isMesh || !mm.material) return;
+      if (/human/i.test(mm.name) && !mm.geometry.getAttribute('poseArm')) {
+        const geo=mm.geometry.clone(),pos=geo.attributes.position,n=pos.count,parent=new Int32Array(n),weld=new Map();for(let i=0;i<n;i++)parent[i]=i;
+        const find=i=>{while(parent[i]!==i){parent[i]=parent[parent[i]];i=parent[i];}return i;};
+        const join=(a,b)=>{if(pos.getY(a)<1.14 && pos.getY(b)<1.14)parent[find(a)]=find(b);};
+        for(let i=0;i<n;i++){if(pos.getY(i)>=1.14)continue;const k=[pos.getX(i),pos.getY(i),pos.getZ(i)].map(v=>Math.round(v*10000)).join(',');if(weld.has(k))join(i,weld.get(k));else weld.set(k,i);}
+        const ix=geo.index;for(let i=0;i<(ix?ix.count:n);i+=3){const a=ix?ix.getX(i):i,b=ix?ix.getX(i+1):i+1,c=ix?ix.getX(i+2):i+2;join(a,b);join(b,c);join(c,a);}
+        const arms=new Set();for(let i=0;i<n;i++)if(pos.getY(i)>1.07&&pos.getY(i)<1.14&&Math.abs(pos.getX(i))>.18)arms.add(find(i));
+        const weights=new Float32Array(n);for(let i=0;i<n;i++)weights[i]=pos.getY(i)<1.14?(arms.has(find(i))?1:0):Math.max(0,Math.min(1,(Math.abs(pos.getX(i))-.15)/.06));
+        geo.setAttribute('poseArm',new window.__THREE.BufferAttribute(weights,1));mm.geometry=geo;
+      }
       mm.material = mm.material.clone();
       mm.material.onBeforeCompile = (sh) => {
-        sh.uniforms.uPhase = anim.uPhase;
-        sh.uniforms.uMove = anim.uMove;
-        sh.vertexShader = 'uniform float uPhase;\nuniform float uMove;\n' + sh.vertexShader.replace(
+        Object.assign(sh.uniforms, anim);
+        const skinMesh = /human/i.test(mm.name);
+        const armWeight = skinMesh ? 'poseArm' : 'smoothstep(0.23,0.29,abs(position.x))*smoothstep(0.65,0.72,position.y)';
+        sh.vertexShader = (skinMesh ? 'attribute float poseArm;\n' : '') + 'uniform float uPhase;\nuniform float uMove;\nuniform float uCrouch;\n' + sh.vertexShader.replace(
           '#include <begin_vertex>',
-          '#include <begin_vertex>\n{' +
-          ' float side = transformed.x >= 0.0 ? 0.0 : 3.14159;' +
-          ' float legW = clamp((0.95 - transformed.y) / 0.95, 0.0, 1.0);' +
-          ' float armM = (abs(transformed.x) > 0.2 && transformed.y > 0.85 && transformed.y < 1.6) ? 1.0 : 0.0;' +
-          ' float armW = clamp((1.35 - transformed.y) / 0.5, 0.0, 1.0) * armM;' +
-          ' transformed.z += uMove * (sin(uPhase + side) * legW * 0.34 + sin(uPhase + side + 3.14159) * armW * 0.26);' +
-          ' transformed.z += uMove * 0.05 * transformed.y;' +
-          '}');
+          `#include <begin_vertex>
+          {
+            float side = transformed.x >= 0.0 ? 0.0 : 3.14159265;
+            float stride = sin(uPhase + side) * uMove;
+            float c = uCrouch;
+            float armW = ${armWeight};
+            vec3 original = transformed;
+            if (transformed.y < 0.87) {
+              float hip = -1.25 * c + stride * (0.55 - c * 0.30);
+              float knee = 2.25 * c + max(0.0, -stride) * (0.65 - c * 0.40);
+              if(transformed.y < 0.105) {
+                float ankle=-(hip+knee);vec2 v=transformed.yz-vec2(0.105,0.04);
+                transformed.yz=mat2(cos(ankle),sin(ankle),-sin(ankle),cos(ankle))*v+vec2(0.105,0.04);
+              }
+              if (transformed.y < 0.44) {
+                vec2 v = transformed.yz - vec2(0.44,0.03);
+                transformed.yz = mat2(cos(knee),sin(knee),-sin(knee),cos(knee)) * v + vec2(0.44,0.03);
+              }
+              vec2 v = transformed.yz - vec2(0.87,0.03);
+              transformed.yz = mat2(cos(hip),sin(hip),-sin(hip),cos(hip)) * v + vec2(0.87,0.03);
+            }
+            vec3 legPose = transformed;
+            transformed = original;
+            if (transformed.y < 1.43) {
+              float swing = -stride * 0.55;
+              vec2 v = transformed.yz - vec2(1.35,0.03);
+              transformed.yz = mat2(cos(swing),sin(swing),-sin(swing),cos(swing)) * v + vec2(1.35,0.03);
+            }
+            transformed = mix(legPose,transformed,armW);
+            transformed.y -= c * (0.43 * (1.0 - cos(1.25)) + 0.335 * (1.0 - cos(1.0)));
+          }`);
       };
+      mm.material.customProgramCacheKey = () => 'nexora-hinge-pose-v5-' + mm.name;
       mm.material.needsUpdate = true;
     });
   }
@@ -612,15 +685,16 @@
     const shift = (((hu || 0) * 36) % 360) / 360 * 0.18 - 0.09;
     root.traverse((m) => {
       if (m.isMesh && /shirt|pants/.test(m.material && m.material.name || '')) {
+        const hook=m.material.onBeforeCompile, key=m.material.customProgramCacheKey;
         m.material = m.material.clone();
+        m.material.onBeforeCompile=hook; m.material.customProgramCacheKey=key;
         m.material.color.offsetHSL(shift, 0, 0);
       }
     });
   }
 
   /* one group with upright + prone children; visibility picks the stance.
-     crouch stays the prior uniform squash: a visibly-sound knees-bent mesh
-     replacement was attempted and rejected; do not re-add without parent pixel sign-off */
+     upright stance uses procedural hip/knee bending; prone retains its own mesh */
   function makeCharGroup(even, anim) {
     const THREE = window.__THREE;
     const up = (even ? charTmpls.A : charTmpls.B).clone(true);
@@ -631,11 +705,12 @@
     if (anim) addWalkAnim(up, anim); // walk swing only on the upright stance
     const g = new THREE.Group();
     g.add(up); g.add(pr);
-    g.userData.up = up; g.userData.pr = pr;
+    g.userData.up = up; g.userData.pr = pr; g.userData.pose = anim;
     return g;
   }
   function showStance(g, st, dead) {
     if (!g.userData.up) return;
+    if(g.userData.pose && g.userData.pose.uCrouch) g.userData.pose.uCrouch.value = st === 'crouch' ? 1 : 0;
     g.userData.up.visible = !dead && st !== 'prone';
     g.userData.pr.visible = !dead && st === 'prone';
   }
@@ -730,11 +805,11 @@
         GUN_HIP[0] + (GUN_ADS[0] - GUN_HIP[0]) * adsT,
         GUN_HIP[1] + (GUN_ADS[1] - GUN_HIP[1]) * adsT,
         GUN_HIP[2] + (GUN_ADS[2] - GUN_HIP[2]) * adsT);
-      gun.visible = adsT < 0.92;
+      gun.visible = adsT < 0.92 && !freeLooking;
     }
     cam.rotation.set(0, 0, 0, 'YXZ');
-    cam.rotation.y = -yaw; // world z+ is map y+; matches aimVec so camera forward = (sin yaw, -cos yaw)
-    cam.rotation.x = pitch;
+    cam.rotation.y = -(yaw+freeYaw); // world z+ is map y+; matches aimVec so camera forward = (sin yaw, -cos yaw)
+    cam.rotation.x = Math.max(-1.1,Math.min(1.1,pitch+freePitch));
     /* crosshair truth: would a bullet fired from the PLAYER (not the camera) along the exact
        aim vector reach out, or stop at a wall? Same grid rule the server uses. This is a
        client-side prediction of server LoS - it closes the TPP parallax gap by making the
@@ -768,7 +843,6 @@
       selfAv.scale.set(1, 1, 1); selfAv.rotation.x = 0;
       showStance(selfAv, me.st, false);
       if (me.st === 'prone') { selfAv.position.y = sjoff * 0.45; }
-      else if (me.st === 'crouch') selfAv.scale.set(1, 0.72, 1); // prior live squash
       // boom: pull camera back along its own -forward, clamp before walls, ease changes
       const THREE = window.__THREE;
       const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
@@ -804,6 +878,7 @@
 
   /* look-around: drag to turn. Returns aim as a dominant-axis [dx,dy] map vector. */
   function lookDelta(dxPx, dyPx) {
+    if(freeLooking){freeYaw=Math.max(-Math.PI,Math.min(Math.PI,freeYaw+dxPx*.006));freePitch=Math.max(-.8,Math.min(.8,freePitch-dyPx*.004));return;}
     const s = 1 - 0.55 * adsT; // slower look while scoped
     yaw += dxPx * 0.0042 * s;
     pitch = Math.max(-0.9, Math.min(0.9, pitch - dyPx * 0.0032 * s));
@@ -817,6 +892,9 @@
   }
 
   window.NelliFps = {
+    setFreeLook,
+    get freeLooking(){return freeLooking;},
+    get viewFace(){return [Math.sin(yaw+freeYaw),-Math.cos(yaw+freeYaw)];},
     init, render, lookDelta, aimVec, setYawFromFace, setAds, setQuality, setCamMode,
     get ready() { return ready; },
     get yaw() { return yaw; },
