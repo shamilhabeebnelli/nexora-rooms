@@ -1,10 +1,27 @@
+/* Hold and drag to inspect the surroundings without redirecting movement or aim. */
+(() => {
+  const eye=document.createElement('button');eye.id='nx-eye';eye.type='button';eye.setAttribute('aria-label','Hold and drag to look around');eye.title='Hold and drag to look around';eye.innerHTML='<span aria-hidden="true">&#x25c9;</span><small>LOOK</small>';document.body.append(eye);
+  const css=document.createElement('style');css.textContent=`#nx-eye{position:fixed;right:140px;top:85px;width:48px;height:48px;z-index:32;border:1px solid #c5c9a780;border-radius:50%;color:#f5ebc9;background:#283a32b0;font:22px system-ui;display:none;touch-action:none;user-select:none}#nx-eye small{display:block;font:8px system-ui}#nx-eye.on{background:#8f7b36d9;border-color:#ffe382}.nx-looking #nelli-crosshair,.nx-looking #nelli-scope-ret{visibility:hidden!important}.nx-looking #nelli-shoot{opacity:.3!important}#nx-eye-hint{position:fixed;left:50%;top:65px;transform:translateX(-50%);z-index:32;background:#10251edd;color:#f9e7ac;padding:5px 9px;border-radius:4px;font:10px system-ui;pointer-events:none}`;document.head.append(css);
+  const hint=document.createElement('div');hint.id='nx-eye-hint';hint.hidden=true;hint.textContent='LOOK AROUND / release to return / aim unchanged';document.body.append(hint);
+  let drag=null;
+  function set(on){if(!window.NelliFps?.ready)return;NelliFps.setFreeLook(on);eye.classList.toggle('on',on);document.body.classList.toggle('nx-looking',on);hint.hidden=!on;}
+  eye.addEventListener('pointerdown',e=>{if(document.body.classList.contains('nelli-layout-editing'))return;e.preventDefault();e.stopPropagation();if(drag)return;drag={id:e.pointerId,x:e.clientX,y:e.clientY};eye.setPointerCapture(e.pointerId);set(true);});
+  eye.addEventListener('pointermove',e=>{if(!drag||drag.id!==e.pointerId)return;e.preventDefault();e.stopPropagation();NelliFps.lookDelta(e.clientX-drag.x,e.clientY-drag.y);drag.x=e.clientX;drag.y=e.clientY;});
+  function end(e){if(drag&&e&&e.pointerId!==undefined&&e.pointerId!==drag.id)return;drag=null;set(false);}
+  for(const type of ['pointerup','pointercancel','lostpointercapture'])eye.addEventListener(type,end);
+  for(const type of ['touchstart','touchmove','touchend','mousedown','mousemove','mouseup','click'])eye.addEventListener(type,e=>e.stopPropagation());
+  for(const type of ['blur','pagehide'])window.addEventListener(type,()=>end());
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)end();});
+  setInterval(()=>{const active=!!window.__nelliS?.joined&&!!window.NelliFps?.ready;eye.style.display=active?'block':'none';if(!active)end();},200);
+})();
+
 /* Local, per-device control layout. Editing never sends gameplay input. */
 (() => {
   'use strict';
   const controls = [
     ['nelli-stick','Movement'],['nelli-shoot','Fire'],['nelli-scope','Scope'],['nelli-jump','Jump'],
     ['nelli-crouch','Crouch'],['nelli-prone','Prone'],['nelli-peekl','Peek left'],['nelli-peekr','Peek right'],
-    ['nelli-mapbtn','Map'],['nelli-cam','FPP / TPP'],['nelli-setbtn','Settings'],['nelli-sound-hud','Sound']
+    ['nx-eye','Look around'],['nelli-mapbtn','Map'],['nelli-cam','FPP / TPP'],['nelli-setbtn','Settings'],['nelli-sound-hud','Sound']
   ].map(([id,name]) => ({id,name,node:document.getElementById(id)})).filter(c => c.node);
   const key = 'nexora-controls-v1', panel = document.getElementById('nelli-settings');
   if (!panel) return;
@@ -189,6 +206,7 @@
     const y=st.you,SZ=188,r=23,ss=SZ/(r*2);mg.clearRect(0,0,SZ,SZ);mg.fillStyle='#14241f';mg.fillRect(0,0,SZ,SZ);mg.imageSmoothingEnabled=false;
     mg.drawImage(terrain,(map.w/2-y.x)*ss+SZ/2-map.w*ss/2, (y.y-map.h)*ss+SZ/2,map.w*ss,map.h*ss);
     for(const o of st.others||[]){const px=SZ/2+(o.x-y.x)*ss,py=SZ/2-(o.y-y.y)*ss;if(px>4&&px<SZ-4&&py>4&&py<SZ-4)marker(mg,px,py,null,o.dead?'#84928d':'#8ed8ff',4);}
+    if(window.NelliFps?.freeLooking){const f=NelliFps.viewFace;mg.strokeStyle='#fff7d4';mg.lineWidth=3;mg.beginPath();mg.moveTo(SZ/2,SZ/2);mg.lineTo(SZ/2+f[0]*30,SZ/2-f[1]*30);mg.stroke();}
     marker(mg,SZ/2,SZ/2,y.f,'#ffdb64',8);mg.fillStyle='#10251eea';mg.fillRect(5,4,27,26);mg.fillStyle='#fff0c7';mg.font='bold 19px system-ui';mg.fillText('N',10,24);
   }
   function update(){const st=state();const visible=!!st&&!(oldMini&&oldMini.classList.contains('nelli-hidden'));mini.hidden=place.hidden=!visible;if(!visible){if(!overlay.hidden)close();return;}
