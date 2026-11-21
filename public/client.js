@@ -120,6 +120,7 @@ function locateEntity(id) {
 }
 
 function applyState(st) {
+  if(!!S.state?.riding!==!!st.riding)resetHeldInput();
   S.state = st;
   handleEvents(st.ev);
   if (st.you.dead && deathBox.classList.contains('nelli-hidden')) {
@@ -417,6 +418,7 @@ function wsSend(obj) {
   return false;
 }
 function sendDir(dx, dy) {
+  if(S.state?.riding){dx=0;dy=0;}
   curMoveDir = [dx, dy];
   if (wsSend({ t: 'dir', dx, dy })) return;
   if (S.mode === 'solo' || S.mode === 'host') S.delve.setDir(S.myId, dx, dy);
@@ -426,13 +428,14 @@ function sendJump() {
   if (S.mode === 'solo' || S.mode === 'host') S.delve.jump(S.myId);
 }
 function sendShoot() {
-  if(window.NelliFps?.freeLooking)return;
+  if(window.NelliFps?.freeLooking||S.state?.riding)return;
   aimThen(() => {
     const pitch = (window.NelliFps && NelliFps.ready) ? NelliFps.pitch : 0; // real vertical aim; the sim is height-aware
     if (wsSend({ t: 'shoot', pitch })) return;
     if (S.mode === 'solo' || S.mode === 'host') S.delve.shoot(S.myId, pitch);
   });
 }
+window.NexoraBusAction=()=>{if(!S.joined)return;if(wsSend({t:'bus'}))return;if(S.delve)S.delve.boardBus(S.myId);};
 let curStance = 'stand';
 function sendStance(st) {
   curStance = st;
