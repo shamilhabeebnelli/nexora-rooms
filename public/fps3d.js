@@ -11,7 +11,8 @@
   let roadsV = null, tanks = null, poles = null, lampHeads = null, sunLight = null, skyDome = null, sunSprite = null;
   const SUN_DIR = { x: -0.55, y: 0.46, z: 0.42 }; /* low warm dusk sun; long shadows, occluded by buildings */
   let othersGroup = null, mobGroup = null, projGroup = null, beaconGroup = null, medkitGroup=null;
-  let medkitMat=null,medkitGeo=null,busGroup=null;
+  let medkitMat=null,medkitGeo=null,busGroup=null,projGeo=null,projMat=null;
+  const tracerPool=[];
   let yaw = 0, pitch = 0, canvasEl = null, lean = 0;
   let freeLooking=false,freeYaw=0,freePitch=0,lastRideYaw=null;
   function setFreeLook(on){freeLooking=!!on;freeYaw=0;freePitch=0;}
@@ -381,7 +382,7 @@
   let dprCap = QUALITY.high.dpr, qualityName = 'high';
   let fpsFrames = 0, fpsLast = 0, fpsValue = 0;
   /* third/first person: camera boom + own avatar, client-side only (server sim unchanged) */
-  let camMode = 'fpp', selfAv = null, selfLx = 0, selfLy = 0, selfPhase = 0, dbgSt = null;
+  let camMode = 'fpp', selfAv = null, selfLx = 0, selfLy = 0, selfPhase = 0, selfLastMovedAt=0, dbgSt = null;
   let selfAnim = null;
   /* 10Hz server snapshots stepped the camera; smooth them: remember the last state
      change to extrapolate by velocity, and ease position/eye/boom every frame. */
@@ -582,14 +583,17 @@
         avatars.set(o.id, av);
       }
       const moved = Math.hypot(o.x - av.lx, o.y - av.ly);
-      av.phase += moved * 9;
+      if(moved>.002)av.lastMovedAt=performance.now();
+
       av.lx = o.x; av.ly = o.y;
       const g = av.obj;
       /* snapshots step at 10Hz; ease each avatar toward the latest point instead */
       {
         const k = Math.min(1, dynDt * 12);
+        const oldX=av.sx,oldY=av.sy;
         av.sx += (o.x * TILE - av.sx) * k; av.sy += (o.y * TILE - av.sy) * k;
-        av.mv += ((moved > 0.002 ? 1 : 0) - av.mv) * Math.min(1, dynDt * 10);
+        av.phase+=Math.min(.5,Math.hypot(av.sx-oldX,av.sy-oldY)/TILE)*9;
+        av.mv += (((performance.now()-(av.lastMovedAt||0)<160) ? 1 : 0) - av.mv) * Math.min(1, dynDt * 10);
         if (av.anim) { av.anim.uPhase.value = av.phase; av.anim.uMove.value = o.riding?0:av.mv; }
       }
       if (o.j && !av.jt) av.jt = performance.now();
@@ -632,21 +636,15 @@
       cap.position.set(mb.x * TILE, 0.6, mb.y * TILE);
       mobGroup.add(cap);
     }
-    projGroup.clear();
-    for (const pr of st.projs || []) {
-      const s = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 6),
-        new THREE.MeshBasicMaterial({ color: 0xffd76a }));
-      s.position.set(pr.x * TILE, pr.z !== undefined ? pr.z : EYE - 0.1, pr.y * TILE);
-      projGroup.add(s);
-    }
+    if(!projGeo){projGeo=new THREE.SphereGeometry(.09,6,6);projMat=new THREE.MeshBasicMaterial({color:0xffd76a});}
+    let pi=0;for(const pr of st.projs||[]){let dot=tracerPool[pi];if(!dot){dot=new THREE.Mesh(projGeo,projMat);tracerPool.push(dot);projGroup.add(dot);}dot.visible=true;dot.position.set(pr.x*TILE,pr.z!==undefined?pr.z:EYE-.1,pr.y*TILE);pi++;}
+    for(;pi<tracerPool.length;pi++)tracerPool[pi].visible=false;
+
     // police stations: blue beacon columns (respawn points)
-    beaconGroup.clear();
-    for (const lb of st.labels || []) {
-      if (lb.kind !== 'police') continue;
-      const b = new THREE.Mesh(new THREE.BoxGeometry(0.5, 7, 0.5),
-        new THREE.MeshBasicMaterial({ color: 0x4d7dd6, transparent: true, opacity: 0.45 }));
-      b.position.set(lb.x * TILE, 3.5, lb.y * TILE);
-      beaconGroup.add(b);
+    const police=(st.labels||[]).filter(lb=>lb.kind==='police'),beaconKey=police.map(lb=>lb.x+','+lb.y).join('|');
+    if(beaconGroup.userData.key!==beaconKey){
+      for(const o of [...beaconGroup.children]){o.geometry.dispose();o.material.dispose();}beaconGroup.clear();beaconGroup.userData.key=beaconKey;
+      for(const lb of police){const beam=new THREE.Mesh(new THREE.BoxGeometry(.5,7,.5),new THREE.MeshBasicMaterial({color:0x4d7dd6,transparent:true,opacity:.45}));beam.position.set(lb.x*TILE,3.5,lb.y*TILE);beaconGroup.add(beam);}
     }
   }
 
@@ -721,6 +719,23 @@
     });
   }
 
+  // Local prototype: alternating elbow reach and low knee draw for moving prone.
+  // Model coordinates remain upright here; the prone child rotates them flat.
+  function addCrawlAnim(root,anim){
+    root.traverse(mm=>{if(!mm.isMesh||!mm.material)return;mm.material=mm.material.clone();
+      mm.material.onBeforeCompile=sh=>{Object.assign(sh.uniforms,anim);sh.vertexShader='uniform float uPhase;uniform float uMove;\n'+sh.vertexShader.replace('#include <begin_vertex>',`#include <begin_vertex>
+      float side=position.x>=0.0?0.0:3.14159265;
+      float crawl=sin(uPhase*.65+side)*uMove;
+      float leg=1.0-smoothstep(.72,.91,position.y);
+      float foreleg=1.0-smoothstep(.40,.65,position.y);
+      float arm=smoothstep(.11,.19,abs(position.x))*smoothstep(1.20,1.48,position.y);
+      transformed.x+=crawl*(.085*leg+.035*arm);
+      transformed.y+=crawl*(.08*leg+.085*arm);
+      transformed.z-=max(0.0,crawl)*.075*foreleg;
+      `);};mm.material.customProgramCacheKey=()=> 'nexora-crawl-local-v1';mm.material.needsUpdate=true;
+    });
+  }
+
   function hueShift(root, hu) {
     const shift = (((hu || 0) * 36) % 360) / 360 * 0.18 - 0.09;
     root.traverse((m) => {
@@ -742,7 +757,7 @@
     pr.rotation.x = Math.PI / 2; // face-down, head toward facing; arms (mesh-rotated forward) lie flat ahead
     pr.position.y = 0.22;
     pr.visible = false;
-    if (anim) addWalkAnim(up, anim); // walk swing only on the upright stance
+    if (anim) {addWalkAnim(up, anim);addCrawlAnim(pr,anim);} // walk swing only on the upright stance
     const g = new THREE.Group();
     g.add(up); g.add(pr);
     g.userData.up = up; g.userData.pr = pr; g.userData.pose = anim;
@@ -875,11 +890,12 @@
     }
     if (camMode === 'tpp' && selfAv) {
       // own avatar stands at the player, faces movement/aim yaw, walks with a real cycle
-      const smoved = Math.hypot(me.x - selfLx, me.y - selfLy);
-      selfPhase += smoved * 9; selfLx = me.x; selfLy = me.y;
+      const smoved = Math.min(.5,Math.hypot(smX/TILE - selfLx, smY/TILE - selfLy));
+      if(smoved>.002)selfLastMovedAt=performance.now();
+      selfPhase += smoved * 9; selfLx = smX/TILE; selfLy = smY/TILE;
       if (selfAnim) {
         selfAnim.uPhase.value = selfPhase;
-        selfAnim.uMove.value += ((!st.riding&&smoved > 0.002 ? 1 : 0) - selfAnim.uMove.value) * Math.min(1, dt * 10);
+        selfAnim.uMove.value += ((!st.riding&&performance.now()-selfLastMovedAt<160 ? 1 : 0) - selfAnim.uMove.value) * Math.min(1, dt * 10);
       }
       selfAv.position.set(smX, 0.03 + sjoff + (smoved > 0.002 ? Math.abs(Math.sin(selfPhase)) * 0.05 : 0), smY);
       selfAv.rotation.y = Math.atan2(Math.sin(yaw), -Math.cos(yaw)); // same facing convention as other avatars: map forward (sin yaw, -cos yaw)
