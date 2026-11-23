@@ -7,7 +7,7 @@
   let renderer = null, scene = null, cam = null, ready = false, failed = false, selfJt = 0;
   let shops = null, shotBlocked = false, shotBlockDist = 0;
   let walls = null, roads = null, dashes = null, ground = null, trunks = null, canopies = null;
-  let shuttleLane = null, horizonGround=null, shuttleSurface=null;
+  let shuttleLane = null, horizonGround=null, shuttleSurface=null, wires = null, roadsI = null;
   let roadsV = null, tanks = null, poles = null, lampHeads = null, sunLight = null, skyDome = null, sunSprite = null;
   const SUN_DIR = { x: -0.55, y: 0.46, z: 0.42 }; /* low warm dusk sun; long shadows, occluded by buildings */
   let othersGroup = null, mobGroup = null, projGroup = null, beaconGroup = null, medkitGroup=null;
@@ -204,27 +204,38 @@
         const bx = grnd() * 512, by = grnd() * 512;
         gg.beginPath(); gg.moveTo(bx, by); gg.lineTo(bx + (grnd() - 0.5) * 3, by - 2 - grnd() * 3); gg.stroke();
       }
+      for (let i = 0; i < 260; i++) { // small stones and gravel flecks
+        const t = grnd();
+        gg.fillStyle = t < 0.5 ? 'rgba(140,136,120,0.5)' : t < 0.8 ? 'rgba(70,66,56,0.5)' : 'rgba(100,96,80,0.55)';
+        gg.fillRect(grnd() * 512, grnd() * 512, 1 + grnd() * 2, 1 + grnd() * 2);
+      }
       const gtex = new THREE.CanvasTexture(gc);
       if (THREE.SRGBColorSpace) gtex.colorSpace = THREE.SRGBColorSpace;
       gtex.wrapS = gtex.wrapT = THREE.RepeatWrapping; gtex.repeat.set(.288, .288);
       ground.material.map = gtex;
+      ground.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAXI * 3), 3);
       ground.receiveShadow = true;horizonGround=new THREE.Mesh(new THREE.PlaneGeometry(500,500),new THREE.MeshLambertMaterial({map:gtex,depthWrite:false}));horizonGround.rotation.x=-Math.PI/2;horizonGround.renderOrder=-.5;scene.add(horizonGround);
 
       /* Original facade atlas. Four plaster/storefront treatments, baked
          balcony rails and rooftop surfaces. No external imagery or brands. */
       function facadeAtlas(shop) {
-        const c=document.createElement('canvas');c.width=2048;c.height=1024;
+        const c=document.createElement('canvas');c.width=3072;c.height=1024;
         const g=c.getContext('2d');let seed=shop?289:113;
         const rnd=()=>((seed=(seed*16807)%2147483647)/2147483647);
-        const shades=shop?['#d3c2a5','#bad0ca','#d2c6bc','#d3c9a7']:['#e6d8be','#c9d6cd','#d6c4b8','#dedccf'];
-        for(let v=0;v<4;v++){
+        const shades=shop?['#d3c2a5','#bad0ca','#d2c6bc','#d3c9a7','#cbb49e','#aebfc6']:['#e6d8be','#c9d6cd','#d6c4b8','#dedccf','#e0c3ab','#c2cfcb'];
+        for(let v=0;v<6;v++){
           const ox=v*512;
           // Atlas lower half in UV coordinates is the separate flat roof.
-          g.fillStyle=['#8f9187','#9d9c8d','#96988a','#9e9d92'][v];g.fillRect(ox,512,512,512);
+          g.fillStyle=['#8f9187','#9d9c8d','#96988a','#9e9d92','#93958b','#989a90'][v];g.fillRect(ox,512,512,512);
           for(let i=0;i<1800;i++){g.fillStyle=rnd()<.5?'#ffffff09':'#202d2610';g.fillRect(ox+rnd()*512,512+rnd()*512,1+rnd()*8,1+rnd()*8);}
           g.strokeStyle='#5c675c55';g.lineWidth=2;
           for(let j=0;j<4;j++){g.beginPath();g.moveTo(ox,512+j*130);g.lineTo(ox+512,512+j*130);g.stroke();}
-          const gr=g.createLinearGradient(ox,0,ox+512,512);gr.addColorStop(0,shades[v]);gr.addColorStop(.6,shades[v]);gr.addColorStop(1,'#9e9d8c');g.fillStyle=gr;g.fillRect(ox,0,512,512);
+          // roof weathering: patch stains, vent boxes with pale caps, parapet shade
+          for(let i=0;i<10;i++){g.fillStyle=rnd()<.5?'rgba(40,44,38,0.16)':'rgba(120,118,104,0.14)';g.beginPath();g.arc(ox+rnd()*512,512+rnd()*512,14+rnd()*46,0,7);g.fill();}
+          g.fillStyle='rgba(28,32,26,0.28)';g.fillRect(ox,512,512,14);
+          for(let i=0;i<3;i++){const vx=ox+40+rnd()*400,vy=560+rnd()*380,vw=26+rnd()*40;
+            g.fillStyle='#6e7268';g.fillRect(vx,vy,vw,vw*.7);g.fillStyle='#8f9187';g.fillRect(vx,vy,vw,6);}
+          const gr=g.createLinearGradient(ox,0,ox+512,512);gr.addColorStop(0,shades[v]);gr.addColorStop(.6,shades[v]);gr.addColorStop(1,'#9e9d8c');g.fillStyle=gr;g.fillRect(ox,0,512,512);if(v===5){g.fillStyle='#8f5a44';g.fillRect(ox,300,512,212);g.fillStyle='#7a4c3a';g.fillRect(ox,300,512,10);}
           for(let i=0;i<4000;i++){g.fillStyle=rnd()<.5?'#ffffff0a':'#514c430b';g.fillRect(ox+rnd()*512,rnd()*512,1+rnd()*5,1+rnd()*3);}
           // Parapet and cast-shadow band, then concrete floor ledges.
           g.fillStyle='#c4c0ad';g.fillRect(ox,0,512,13);g.fillStyle='#454e3c50';g.fillRect(ox,13,512,9);
@@ -232,29 +243,37 @@
             const yy=34+f*124;
             g.fillStyle='#b0af9d';g.fillRect(ox,yy+103,512,8);g.fillStyle='#575c4a44';g.fillRect(ox,yy+111,512,5);
             for(let col=0;col<3;col++){
-              const xx=ox+33+col*162,ww=v===1?105:88,hh=76;
+              const xx=ox+33+col*162,ww=v===1?105:v===4?120:88,hh=v===4?64:76;
               g.fillStyle='#4c534d';g.fillRect(xx-4,yy-4,ww+8,hh+8);
               const glass=g.createLinearGradient(xx,yy,xx+ww,yy+hh);glass.addColorStop(0,'#758b8d');glass.addColorStop(.28,'#4e6469');glass.addColorStop(.35,'#a7b5b2');glass.addColorStop(.4,'#34494c');glass.addColorStop(1,'#192e32');
               g.fillStyle=glass;g.fillRect(xx,yy,ww,hh);
               g.fillStyle='#d2d1bd';g.fillRect(xx+ww/2-2,yy,4,hh);g.fillRect(xx,yy+hh*.47,ww,3);
               g.fillStyle='#f1e9cb55';g.fillRect(xx+8,yy+4,ww*.18,hh-8);
+              // a lit minority of windows: warm interior glow for dusk
+              if(rnd()<0.24){const lit=g.createLinearGradient(xx,yy,xx,yy+hh);lit.addColorStop(0,'rgba(255,196,110,0.85)');lit.addColorStop(1,'rgba(212,140,60,0.75)');g.fillStyle=lit;g.fillRect(xx+2,yy+2,ww-4,hh-4);g.fillStyle='rgba(70,44,20,0.6)';g.fillRect(xx+ww/2-2,yy,4,hh);g.fillRect(xx,yy+hh*.47,ww,3);}
               // Ventilated shutters and projecting balcony silhouettes vary.
-              if(v===2&&col!==1){g.fillStyle='#789b8c';g.fillRect(xx,yy,ww*.45,hh);g.strokeStyle='#384f48';g.lineWidth=2;for(let l=8;l<hh;l+=7){g.beginPath();g.moveTo(xx+3,yy+l);g.lineTo(xx+ww*.45-3,yy+l);g.stroke();}}
+              if((v===2||v===5)&&col!==1){g.fillStyle='#789b8c';g.fillRect(xx,yy,ww*.45,hh);g.strokeStyle='#384f48';g.lineWidth=2;for(let l=8;l<hh;l+=7){g.beginPath();g.moveTo(xx+3,yy+l);g.lineTo(xx+ww*.45-3,yy+l);g.stroke();}}
               if(v===1||v===3){g.fillStyle='#e0dcc8';g.fillRect(xx-12,yy+hh-7,ww+24,18);g.fillStyle='#464e4180';g.fillRect(xx-12,yy+hh+11,ww+24,9);g.strokeStyle='#38473b';g.lineWidth=3;for(let l=0;l<7;l++){let bx=xx-8+l*(ww+16)/6;g.beginPath();g.moveTo(bx,yy+hh-26);g.lineTo(bx,yy+hh+3);g.stroke();}g.strokeRect(xx-10,yy+hh-26,ww+20,29);}
               if(f===1&&col===0){g.fillStyle='#d7d6ca';g.fillRect(xx+ww-9,yy+51,33,25);g.strokeStyle='#7a8076';g.lineWidth=2;g.beginPath();g.arc(xx+ww+7,yy+63,9,0,7);g.stroke();}
               g.fillStyle='#646d5030';for(let l=0;l<3;l++)g.fillRect(xx+l*30,yy+hh+21,7,7+rnd()*17);
+              // monsoon streak: soft damp mark bleeding down from each sill
+              g.fillStyle='rgba(48,54,46,0.09)';g.fillRect(xx+4,yy+hh+4,ww-8,26+rnd()*22);
+              // occasional AC outdoor unit with fan ring (variant-driven spots)
+              if((v===0&&f===2&&col===2)||(v===2&&f===0&&col===2)){g.fillStyle='#c9cbc0';g.fillRect(xx+ww-34,yy+hh-30,26,22);g.strokeStyle='#767b70';g.lineWidth=2;g.strokeRect(xx+ww-34,yy+hh-30,26,22);g.beginPath();g.arc(xx+ww-21,yy+hh-19,7,0,7);g.stroke();}
             }
           }
           if(shop){
-            g.fillStyle=['#294c46','#4c4551','#6b4e3c','#374b5c'][v];g.fillRect(ox+3,365,506,40);
-            g.fillStyle='#fff0c9';g.font='600 27px sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(['STORES','CAFE','MARKET','WORKSHOP'][v],ox+256,385);
-            const aw=['#ad6650','#577d6c','#bd9767','#5d7584'][v];for(let col=0;col<16;col++){g.fillStyle=col%2?aw:'#d7d3bd';g.fillRect(ox+col*32,407,32,20);}g.fillStyle='#243b3290';g.fillRect(ox,427,512,8);
+            g.fillStyle=['#294c46','#4c4551','#6b4e3c','#374b5c','#5c4a68','#7a5a34'][v];g.fillRect(ox+3,365,506,40);
+            g.fillStyle='#fff0c9';g.font='600 27px sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(['STORES','CAFE','MARKET','WORKSHOP','BAKERY','TEXTILES'][v],ox+256,385);
+            const aw=['#ad6650','#577d6c','#bd9767','#5d7584','#7d6a9b','#a98a5a'][v];for(let col=0;col<16;col++){g.fillStyle=col%2?aw:'#d7d3bd';g.fillRect(ox+col*32,407,32,20);}g.fillStyle='#243b3290';g.fillRect(ox,427,512,8);
             for(let col=0;col<4;col++){
               const xx=ox+10+col*126;g.fillStyle='#293e3c';g.fillRect(xx,437,113,66);
               if(v===3){g.fillStyle='#8f9890';g.fillRect(xx+3,439,107,62);g.strokeStyle='#4f6158';for(let z=444;z<500;z+=6){g.beginPath();g.moveTo(xx+3,z);g.lineTo(xx+110,z);g.stroke();}}
               else {const glass=g.createLinearGradient(xx,437,xx,503);glass.addColorStop(0,'#7d9995');glass.addColorStop(.4,'#3b5b58');glass.addColorStop(1,'#172d2b');g.fillStyle=glass;g.fillRect(xx+3,440,107,60);g.fillStyle='#dec49180';g.fillRect(xx+10,448,23,43);g.fillStyle='#e8dfbf';g.fillRect(xx+90,466,3,12);}
             }
           }else{g.fillStyle='#a1a38f';g.fillRect(ox,406,512,106);g.fillStyle='#35483c';g.fillRect(ox+207,416,98,96);g.fillStyle='#809484';g.fillRect(ox+215,424,82,88);g.fillStyle='#293e35';g.fillRect(ox+250,424,3,88);g.fillStyle='#d1bf87';g.fillRect(ox+279,467,4,13);}
+          // ground contact shading: damp/dirt rise at the wall foot
+          const foot=g.createLinearGradient(0,452,0,512);foot.addColorStop(0,'rgba(34,40,32,0)');foot.addColorStop(1,'rgba(34,40,32,0.34)');g.fillStyle=foot;g.fillRect(ox,452,512,60);
           g.fillStyle='#53634b';g.fillRect(ox,506,512,6);
         }
         const t=new THREE.CanvasTexture(c);if(THREE.SRGBColorSpace)t.colorSpace=THREE.SRGBColorSpace;
@@ -265,11 +284,11 @@
         const mat=new THREE.MeshLambertMaterial({color:0xffffff,map:facadeAtlas(shop)});
         mat.onBeforeCompile=sh=>{sh.vertexShader=sh.vertexShader.replace('#include <uv_vertex>',`#include <uv_vertex>
           #ifdef USE_MAP
-            float facadeVariant = floor(fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898,78.233))) * 43758.5453) * 4.0);
-            vMapUv.x = (clamp(vMapUv.x,0.002,0.998) + facadeVariant) * 0.25;
+            float facadeVariant = floor(fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898,78.233))) * 43758.5453) * 6.0);
+            vMapUv.x = (clamp(vMapUv.x,0.002,0.998) + facadeVariant) * 0.16667;
             vMapUv.y = clamp(vMapUv.y,0.002,0.998) * 0.5 + (abs(normal.y) > 0.5 ? 0.0 : 0.5);
           #endif`);};
-        mat.customProgramCacheKey=()=>shop?'original-shop-atlas-v1':'original-home-atlas-v1';
+        mat.customProgramCacheKey=()=>shop?'original-shop-atlas-v2':'original-home-atlas-v2';
         return mat;
       }
       walls = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, WALLH, TILE),atlasMaterial(false), MAXI);
@@ -296,7 +315,27 @@
       }
       const unmarkedCanvas=document.createElement('canvas');unmarkedCanvas.width=unmarkedCanvas.height=128;unmarkedCanvas.getContext('2d').drawImage(rc,0,0);const unmarkedTex=new THREE.CanvasTexture(unmarkedCanvas);unmarkedTex.colorSpace=THREE.SRGBColorSpace;unmarkedTex.wrapS=unmarkedTex.wrapT=THREE.RepeatWrapping;
       shuttleLane=new THREE.InstancedMesh(new THREE.BoxGeometry(TILE,.07,TILE),new THREE.MeshLambertMaterial({map:unmarkedTex}),MAXI);shuttleLane.visible=false;
-      const roadData=window.NexoraShuttleRoad;if(roadData){const geo=new THREE.BufferGeometry(),positions=new Float32Array(roadData.triangles),uv=[];for(let i=0;i<positions.length;i+=3)uv.push(positions[i]/3,positions[i+2]/3);geo.setAttribute('position',new THREE.BufferAttribute(positions,3));geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));geo.computeVertexNormals();shuttleSurface=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({map:unmarkedTex,side:THREE.DoubleSide}));shuttleSurface.receiveShadow=true;scene.add(shuttleSurface);
+      /* shuttle highway gets its own isotropic asphalt: the world-flat uv repeat
+         cannot follow the curves, so directional bands/lines would stripe across
+         the road. Speckle and patch stains only; edge outlines carry the shape. */
+      const hc = document.createElement('canvas'); hc.width = hc.height = 128;
+      const hg = hc.getContext('2d');
+      hg.fillStyle = '#4b4b51'; hg.fillRect(0, 0, 128, 128);
+      let hseed = 97;
+      const hrnd = () => (hseed = (hseed * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 1000; i++) {
+        const t = hrnd();
+        hg.fillStyle = t < 0.5 ? 'rgba(24,24,28,0.32)' : 'rgba(158,158,164,0.15)';
+        hg.fillRect(hrnd() * 128, hrnd() * 128, 1.4, 1.4);
+      }
+      for (let i = 0; i < 7; i++) { // soft patch repairs / oil stains, direction-free
+        hg.fillStyle = hrnd() < 0.5 ? 'rgba(28,28,32,0.20)' : 'rgba(70,70,76,0.22)';
+        hg.beginPath(); hg.arc(hrnd() * 128, hrnd() * 128, 6 + hrnd() * 18, 0, 7); hg.fill();
+      }
+      const htex = new THREE.CanvasTexture(hc);
+      if (THREE.SRGBColorSpace) htex.colorSpace = THREE.SRGBColorSpace;
+      htex.wrapS = htex.wrapT = THREE.RepeatWrapping;
+      const roadData=window.NexoraShuttleRoad;if(roadData){const geo=new THREE.BufferGeometry(),positions=new Float32Array(roadData.triangles),uv=[];for(let i=0;i<positions.length;i+=3)uv.push(positions[i]/4.8,positions[i+2]/4.8);geo.setAttribute('position',new THREE.BufferAttribute(positions,3));geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));geo.computeVertexNormals();shuttleSurface=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({map:htex,side:THREE.DoubleSide}));shuttleSurface.receiveShadow=true;scene.add(shuttleSurface);
       const edgeVertices=[];for(const ring of roadData.edges)for(let i=1;i<ring.length;i++){const a=ring[i-1],b=ring[i],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz),ox=-dz/len*.035,oz=dx/len*.035;for(const [x,z]of [[a[0]+ox,a[1]+oz],[b[0]+ox,b[1]+oz],[b[0]-ox,b[1]-oz],[a[0]+ox,a[1]+oz],[b[0]-ox,b[1]-oz],[a[0]-ox,a[1]-oz]])edgeVertices.push(x,.091,z);}const eg=new THREE.BufferGeometry();eg.setAttribute('position',new THREE.Float32BufferAttribute(edgeVertices,3));eg.computeVertexNormals();scene.add(new THREE.Mesh(eg,new THREE.MeshBasicMaterial({color:0xa6a18a,side:THREE.DoubleSide})));}
 
       rg.fillStyle = 'rgba(214,210,196,0.75)'; rg.fillRect(0, 3, 128, 3); rg.fillRect(0, 122, 128, 3); // edge lines
@@ -309,6 +348,12 @@
         new THREE.MeshLambertMaterial({ color: 0xffffff, map: rtex }), MAXI);
       roadsV = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, 0.07, TILE),
         new THREE.MeshLambertMaterial({ color: 0xffffff, map: rtexV }), MAXI);
+      /* interior tiles of wide paved areas: edge lines only belong at real road
+         edges; without this, plazas/junctions show a white ladder on every tile */
+      roadsI = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, 0.07, TILE),
+        new THREE.MeshLambertMaterial({ color: 0xffffff, map: htex }), MAXI);
+      roadsI.frustumCulled = false;
+      roadsI.receiveShadow = true;
       dashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.09, 0.09, TILE * 0.45),
         new THREE.MeshBasicMaterial({ color: 0xd9b23a }), MAXI);
       /* rooftop water tanks: Kerala skyline signature, sit on the same per-block height as the walls */
@@ -319,6 +364,12 @@
         new THREE.MeshLambertMaterial({ color: 0x2f3339 }), 128);
       lampHeads = new THREE.InstancedMesh(new THREE.BoxGeometry(0.30, 0.09, 0.13),
         new THREE.MeshBasicMaterial({ color: 0xffca6a }), 128);
+      /* sagging service wires between same-side streetlight poles; one line
+         batch, rebuilt with the static tiles. Kerala street signature. */
+      wires = new THREE.LineSegments(new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ color: 0x14181a }));
+      wires.frustumCulled = false;
+      scene.add(wires);
       /* instanced tile meshes: frustumCulled must stay OFF - their bounding sphere is
          computed once from the first view window and goes stale as the player moves,
          which would cull every building/road at once */
@@ -327,13 +378,43 @@
       shops.castShadow = true; shops.receiveShadow = true;
       roads.receiveShadow = true; roadsV.receiveShadow = true;
       tanks.castShadow = true; poles.castShadow = true;
-      scene.add(walls); scene.add(shops); scene.add(roads); scene.add(roadsV); scene.add(dashes);
+      scene.add(walls); scene.add(shops); scene.add(roads); scene.add(roadsV); scene.add(roadsI); scene.add(dashes);
       scene.add(tanks); scene.add(poles); scene.add(lampHeads);
       /* low-poly trees: trunk + cone canopy, placed deterministically on open tiles in rebuild() */
+      /* bark texture: near-white streak canvas so the trunk brown survives;
+         vertical ridges catch the low sun instead of reading as flat poles */
+      const bc = document.createElement('canvas'); bc.width = bc.height = 64;
+      const bg2 = bc.getContext('2d');
+      bg2.fillStyle = '#d8cfc4'; bg2.fillRect(0, 0, 64, 64);
+      let bseed = 29;
+      const brnd = () => (bseed = (bseed * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 90; i++) {
+        const t = brnd();
+        bg2.strokeStyle = t < 0.5 ? 'rgba(88,74,58,0.55)' : 'rgba(150,138,120,0.5)';
+        bg2.lineWidth = 1 + brnd() * 1.6;
+        const bx = brnd() * 64;
+        bg2.beginPath(); bg2.moveTo(bx, brnd() * 20); bg2.lineTo(bx + (brnd() - 0.5) * 5, 34 + brnd() * 30); bg2.stroke();
+      }
+      const btex = new THREE.CanvasTexture(bc);
+      if (THREE.SRGBColorSpace) btex.colorSpace = THREE.SRGBColorSpace;
       trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.08, 0.13, 1.0, 6),
-        new THREE.MeshLambertMaterial({ color: 0x4a3a26 }), MAXT);
+        new THREE.MeshLambertMaterial({ color: 0x4a3a26, map: btex }), MAXT);
+      /* leaf-cluster texture on the canopy blobs: white-based so the per-tree
+         instance tint survives; blotches and gaps break the smooth-ball look */
+      const lc = document.createElement('canvas'); lc.width = lc.height = 128;
+      const lg = lc.getContext('2d');
+      lg.fillStyle = '#e8ebe2'; lg.fillRect(0, 0, 128, 128);
+      let lseed = 41;
+      const lrnd = () => (lseed = (lseed * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 420; i++) {
+        const t = lrnd();
+        lg.fillStyle = t < 0.38 ? 'rgba(96,112,84,0.55)' : t < 0.72 ? 'rgba(150,158,128,0.5)' : t < 0.9 ? 'rgba(196,200,176,0.55)' : 'rgba(52,60,44,0.7)';
+        lg.beginPath(); lg.arc(lrnd() * 128, lrnd() * 128, 1.5 + lrnd() * 4.5, 0, 7); lg.fill();
+      }
+      const ltex = new THREE.CanvasTexture(lc);
+      if (THREE.SRGBColorSpace) ltex.colorSpace = THREE.SRGBColorSpace;
       canopies = new THREE.InstancedMesh(new THREE.SphereGeometry(0.55, 11, 8),
-        new THREE.MeshLambertMaterial({ color: 0xffffff }), MAXT * 3);
+        new THREE.MeshLambertMaterial({ color: 0xffffff, map: ltex }), MAXT * 3);
       canopies.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAXT * 3), 3);
       trunks.frustumCulled = false; canopies.frustumCulled = false;
       trunks.castShadow = true; canopies.castShadow = true;
@@ -387,7 +468,7 @@
   /* 10Hz server snapshots stepped the camera; smooth them: remember the last state
      change to extrapolate by velocity, and ease position/eye/boom every frame. */
   let smX = null, smY = null, eyeCur = null, boomCur = 0, lastRT = 0, dynDt = 0.016;
-  let stX = null, stY = null, stT = 0, stVx = 0, stVy = 0;
+  let stX = null, stY = null, stT = 0, stVx = 0, stVy = 0, stIvl = 0.1;
   function setQuality(q) {
     const preset = QUALITY[q];
     if (!preset) return false;
@@ -425,8 +506,9 @@
     const vkey = v.x0 + ':' + v.y0 + ':' + (st.floor | 0);
     if (vkey === rebuild._key) { rebuildDynamic(st); return; } /* static instanced tiles only move with the view window */
     rebuild._key = vkey;
-    let wi = 0, ri = 0, rvi = 0, di = 0, ti = 0, si = 0, ki = 0, pi = 0, sli=0, gi=0;
+    let wi = 0, ri = 0, rvi = 0, rii = 0, di = 0, ti = 0, si = 0, ki = 0, pi = 0, sli=0, gi=0;
     const m = _m4(), c = new THREE.Color();
+    const polePts = []; // wire anchors: pole tops, connected after the tile loop
     const rows = v.tiles;
     const codeAt = (x, y) => { // road-neighbour probe inside the view window; -1 outside
       if (y < 0 || y >= rows.length) return -1;
@@ -439,7 +521,13 @@
       for (let col = 0; col < line.length; col++) {
         const code = line.charCodeAt(col) - 48;
         const gx = v.x0 + col, gy = v.y0 + row;
-        m.makeTranslation(gx*TILE,-.04,gy*TILE);ground.setMatrixAt(gi++,m);
+        m.makeTranslation(gx*TILE,-.04,gy*TILE);ground.setMatrixAt(gi,m);
+        { // subtle per-tile ground tint breaks texture tiling at distance
+          const tg = hash2(gx * 5 + 3, gy * 7 + 1);
+          c.setHSL(0.16 + tg * 0.05, 0.08 + tg * 0.06, 0.86 + tg * 0.12);
+          ground.setColorAt(gi, c);
+        }
+        gi++;
         if (code === 0 && wi < MAXI) { // building block, slight per-block tint + height variety
           const t = hash2(gx, gy);
           const hs = 0.75 + t * 0.9; // 0.75x-1.65x WALLH; bullets/camera stay below the lowest block
@@ -462,8 +550,13 @@
           const lr = codeAt(col - 1, row) === 5 || codeAt(col - 1, row) === 6 || codeAt(col + 1, row) === 5 || codeAt(col + 1, row) === 6;
           const ud = codeAt(col, row - 1) === 5 || codeAt(col, row - 1) === 6 || codeAt(col, row + 1) === 5 || codeAt(col, row + 1) === 6;
           const vert = ud && !lr;
+          // interior of a paved run: road on both across-neighbours
+          const inner = vert
+            ? (codeAt(col - 1, row) === 5 || codeAt(col - 1, row) === 6) && (codeAt(col + 1, row) === 5 || codeAt(col + 1, row) === 6)
+            : (codeAt(col, row - 1) === 5 || codeAt(col, row - 1) === 6) && (codeAt(col, row + 1) === 5 || codeAt(col, row + 1) === 6);
           m.makeTranslation(gx * TILE, 0.035, gy * TILE);
-          if (vert && rvi < MAXI) { roadsV.setMatrixAt(rvi, m); rvi++; }
+          if (inner && rii < MAXI) { roadsI.setMatrixAt(rii, m); rii++; }
+          else if (vert && rvi < MAXI) { roadsV.setMatrixAt(rvi, m); rvi++; }
           else if (!vert && ri < MAXI) { roads.setMatrixAt(ri, m); ri++; }
           // divider dashes only on the main road (matches the real-layout rule)
           if (code === 5 && di < MAXI && (gy % 2 === 0)) {
@@ -480,6 +573,7 @@
             poles.setMatrixAt(pi, m);
             m.makeTranslation(gx * TILE + ox + hx, 3.0, gy * TILE + oz + hz);
             lampHeads.setMatrixAt(pi, m);
+            polePts.push({ x: gx * TILE + ox, z: gy * TILE + oz, key: vert ? gx : gy, along: vert ? gy : gx, side, vert });
             pi++;
           }
         } else if (code !== 5 && code !== 6 && code !== 0 && ti < MAXT && hash2(gx * 3 + 11, gy * 5 + 7) < 0.055) {
@@ -504,14 +598,45 @@
         }
       }
     }
-    ground.count=gi;ground.instanceMatrix.needsUpdate=true;shuttleLane.count=sli;shuttleLane.instanceMatrix.needsUpdate=true;
-    walls.count = wi; shops.count = si; roads.count = ri; roadsV.count = rvi; dashes.count = di;
+    ground.count=gi;ground.instanceMatrix.needsUpdate=true;if(ground.instanceColor)ground.instanceColor.needsUpdate=true;shuttleLane.count=sli;shuttleLane.instanceMatrix.needsUpdate=true;
+    walls.count = wi; shops.count = si; roads.count = ri; roadsV.count = rvi; roadsI.count = rii; dashes.count = di;
     tanks.count = ki; poles.count = pi; lampHeads.count = pi;
     trunks.count = ti; canopies.count = ti * 3;
+    { // connect same-side consecutive poles with two sagging wires per span
+      const wpos = [];
+      const groups = new Map();
+      for (const p of polePts) {
+        const k = p.vert + ':' + p.key + ':' + p.side;
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(p);
+      }
+      for (const list of groups.values()) {
+        list.sort((a, b) => a.along - b.along);
+        for (let i = 1; i < list.length; i++) {
+          const a = list[i - 1], b = list[i];
+          const gap = b.along - a.along;
+          if (gap < 1.5 || gap > 6) continue; // same road run only; skip cross-window leaps
+          for (const w of [[0, 2.9], [0.09, 2.76]]) { // [perp offset, attach height]
+            const ox = a.vert ? w[0] : 0, oz = a.vert ? 0 : w[0];
+            const SEG = 6, SAG = 0.24;
+            for (let sgm = 0; sgm < SEG; sgm++) {
+              const t0 = sgm / SEG, t1 = (sgm + 1) / SEG;
+              wpos.push(a.x + ox + (b.x - a.x) * t0, w[1] - SAG * 4 * t0 * (1 - t0), a.z + oz + (b.z - a.z) * t0,
+                        a.x + ox + (b.x - a.x) * t1, w[1] - SAG * 4 * t1 * (1 - t1), a.z + oz + (b.z - a.z) * t1);
+            }
+          }
+        }
+      }
+      wires.geometry.dispose();
+      const wgeo = new THREE.BufferGeometry();
+      wgeo.setAttribute('position', new THREE.Float32BufferAttribute(wpos, 3));
+      wires.geometry = wgeo;
+    }
     walls.instanceMatrix.needsUpdate = true;
     shops.instanceMatrix.needsUpdate = true;
     roads.instanceMatrix.needsUpdate = true;
     roadsV.instanceMatrix.needsUpdate = true;
+    roadsI.instanceMatrix.needsUpdate = true;
     dashes.instanceMatrix.needsUpdate = true;
     tanks.instanceMatrix.needsUpdate = true;
     poles.instanceMatrix.needsUpdate = true;
@@ -809,21 +934,26 @@
     const me = st.you;
     // Keep the passenger's chosen look angle relative to the turning vehicle.
     if(st.riding&&st.bus){const a=Math.atan2(st.bus.dx,-st.bus.dy);yaw=lastRideYaw===null?a:yaw+Math.atan2(Math.sin(a-lastRideYaw),Math.cos(a-lastRideYaw));lastRideYaw=a;}else lastRideYaw=null;
-    /* velocity extrapolation from the last snapshot change, capped small */
+    /* velocity extrapolation from the last snapshot change. Adaptive cadence:
+       the measured snapshot interval (EMA) sets the extrapolation window and
+       the silence timeout, and incoming velocity blends instead of replacing -
+       snapshot jitter stops stepping the camera. Teleports still snap. */
     if (stX === null || me.x !== stX || me.y !== stY) {
       const dtt = stT ? Math.max(0.05, (nowMs - stT) / 1000) : 0.1;
       if (stX !== null) {
-        stVx = (me.x - stX) / dtt; stVy = (me.y - stY) / dtt;
-        const speed = Math.hypot(stVx, stVy), maxSpeed = 4 / TILE;
-        if (speed > maxSpeed) { stVx *= maxSpeed / speed; stVy *= maxSpeed / speed; }
+        let nvx = (me.x - stX) / dtt, nvy = (me.y - stY) / dtt;
+        const speed = Math.hypot(nvx, nvy), maxSpeed = 4 / TILE;
+        if (speed > maxSpeed) { nvx *= maxSpeed / speed; nvy *= maxSpeed / speed; }
+        stVx = stVx * 0.35 + nvx * 0.65; stVy = stVy * 0.35 + nvy * 0.65;
+        stIvl = stIvl * 0.8 + dtt * 0.2;
       }
       if (stX !== null && Math.hypot(me.x - stX, me.y - stY) > 3) {
         stVx = stVy = 0; smX = me.x * TILE; smY = me.y * TILE;
       }
       stX = me.x; stY = me.y; stT = nowMs;
-    } else if (nowMs - stT > 160) { stVx = stVy = 0; }
+    } else if (nowMs - stT > stIvl * 1800) { stVx = stVy = 0; }
     {
-      const age = Math.min(0.12, (nowMs - stT) / 1000);
+      const age = Math.min(Math.min(0.25, stIvl * 1.6), (nowMs - stT) / 1000);
       const tx = (me.x + stVx * age) * TILE, ty = (me.y + stVy * age) * TILE;
       if (smX === null) { smX = tx; smY = ty; }
       const k = Math.min(1, dt * 14);
