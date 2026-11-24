@@ -259,3 +259,4 @@ body.nelli-shell {
 
 /* crosshair truth: bullet line from the player is wall-blocked */
 #nelli-crosshair.nelli-shot-blocked::before, #nelli-crosshair.nelli-shot-blocked::after { background: #a0573f; }
+@media (max-width: 760px) and (orientation: landscape) { .nelli-sound-hud { top: 44px; left: 10px; right: auto; } }
