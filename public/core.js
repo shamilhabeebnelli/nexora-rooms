@@ -375,14 +375,58 @@
         for(let h=0;h<q.length;h++){const at=q[h];const ex=at.x-b.x,ey=at.y-b.y,side=ex*b.dy-ey*b.dx,along=ex*b.dx+ey*b.dy;if((Math.abs(side)>1.05||Math.abs(along)>2.5)&&!this.playerAt(at.x,at.y,p)){spot=at;break;}if(at.d>=5)continue;for(const [dx,dy]of [[1,0],[-1,0],[0,1],[0,-1]]){const x=at.x+dx,y=at.y+dy,key=x+','+y;if(!seen.has(key)&&this.walkable(x,y)){seen.add(key);q.push({x,y,d:at.d+1});}}}
         if(!spot)return false;p.x=spot.x;p.y=spot.y;p.dir=null;b.riders.delete(id);p.riding=false;return true;
       }
-      if(b.wait<=0||Math.hypot(p.x-b.x,p.y-b.y)>3||b.riders.size>=10)return false;
+      if((b.wait<=0&&!(b.parked>0))||Math.hypot(p.x-b.x,p.y-b.y)>3||b.riders.size>=10)return false;
       b.riders.add(id);p.riding=true;p.dir=null;p.stance='stand';return true;
+    }
+    driveBus(id) { /* take or release the driver seat; any rider may drive when nobody is */
+      const p=this.players.get(id),b=this.bus;if(!p||!b||!b.riders.has(id))return false;
+      if(b.driver===id){b.driver=null;b.speed=0;b.parked=1;b.ret=null;return true;}
+      if(b.driver)return false;
+      b.driver=id;b.speed=0;b.steer=0;b.throttle=0;b.wait=0;b.parked=0;return true;
+    }
+    driveInput(id,s,th){const b=this.bus;if(!b||b.driver!==id)return;b.steer=Math.max(-1,Math.min(1,Number(s)||0));b.throttle=Math.max(-1,Math.min(1,Number(th)||0));}
+    /* free-steer vehicle step (10 Hz). ASSUMPTION: any non-wall tile is drivable, roads are not enforced; walls/buildings stop the bus. */
+    stepDrivenBus(b) {
+      const dt=.1;let sp=b.speed||0;const th=b.throttle||0,st=b.steer||0;
+      if(th>0)sp+=(sp<0?4.5:2.2)*th*dt;else if(th<0)sp+=(sp>0?-4.5:-1.5)*(-th)*dt;else{const d=1.2*dt;sp=Math.abs(sp)<=d?0:sp-Math.sign(sp)*d;}
+      sp=Math.max(-1.2,Math.min(3.6,sp));
+      let ang=Math.atan2(b.dx,b.dy);ang-=st*1.1*Math.max(-1,Math.min(1,sp/1.5))*dt;
+      const dx=Math.sin(ang),dy=Math.cos(ang),sx=-dy,sy=dx;const nx=b.x+dx*sp*dt,ny=b.y+dy*sp*dt;
+      const free=(x,y,ax,ay)=>this.hullFree(x,y,ax,ay);
+      if(free(nx,ny,dx,dy)){b.x=nx;b.y=ny;b.dx=dx;b.dy=dy;b.speed=sp;}
+      else if(free(b.x,b.y,dx,dy)){b.dx=dx;b.dy=dy;b.speed=0;} /* turned in place against an obstacle */
+      else b.speed=0;
+    }
+    hullFree(x,y,ax,ay){const bx=-ay,by=ax;for(const l of [-2,-1,0,1,2])for(const w of [-.55,.55])if(!this.walkable(x+ax*l+bx*w,y+ay*l+by*w))return false;return true;}
+    startBusReturn(b) { /* breadth-first over hull-clear tile moves from the parked bus to a route point where the bus also fits along the route heading; no clear path = stay parked */
+      const w=this.map.w,key=(x,y)=>y*w+x,R=b.route,rt=new Map();
+      R.forEach((r,i)=>{const n=R[(i+1)%R.length],l=Math.hypot(n.x-r.x,n.y-r.y)||1,hx=(n.x-r.x)/l,hy=(n.y-r.y)/l,k=key(Math.round(r.x),Math.round(r.y));
+        if(!rt.has(k)&&this.hullFree(r.x,r.y,hx,hy)&&this.hullFree(Math.round(r.x),Math.round(r.y),hx,hy))rt.set(k,i);});
+      const sx=Math.round(b.x),sy=Math.round(b.y),prev=new Map([[key(sx,sy),null]]),q=[[sx,sy]];let end=null;
+      const ok=(x,y,dx,dy)=>this.hullFree(x,y,dx,dy);
+      for(let h=0;h<q.length&&h<200000;h++){const [x,y]=q[h];if(rt.has(key(x,y))){end=key(x,y);break;}for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=x+dx,ny=y+dy,k=key(nx,ny);if(!prev.has(k)&&nx>=0&&ny>=0&&nx<w&&ny<this.map.h&&this.walkable(nx,ny)&&ok(x,y,dx,dy)&&ok(nx,ny,dx,dy)){prev.set(k,key(x,y));q.push([nx,ny]);}}}
+      if(end===null){b.ret=null;b.parked=1;return;}
+      const path=[];for(let k=end;k!==null;k=prev.get(k))path.push({x:k%w,y:Math.floor(k/w)});path.reverse();
+      const ri=rt.get(end);path.push({x:R[ri].x,y:R[ri].y});b.retIdx=ri;
+      b.ret=path.slice(1);const f=b.ret[0],l=Math.hypot(f.x-b.x,f.y-b.y);
+      if(l>.01&&!this.hullFree(b.x,b.y,(f.x-b.x)/l,(f.y-b.y)/l)){b.ret=null;b.parked=1;}
+    }
+    finishBusReturn(b) {
+      let bi=b.retIdx;if(bi===undefined||bi===null){bi=0;let bd=1e9;b.route.forEach((r,i)=>{const d=Math.hypot(r.x-b.x,r.y-b.y);if(d<bd){bd=d;bi=i;}});}
+      const n=b.route[(bi+1)%b.route.length];b.index=bi;b.retIdx=null;const l=Math.hypot(n.x-b.x,n.y-b.y)||1;b.dx=(n.x-b.x)/l;b.dy=(n.y-b.y)/l;b.ret=null;b.parked=0;b.wait=30;
     }
     tickBus() {
       const b=this.bus;if(!b)return;
       for(const id of b.riders){const p=this.players.get(id);if(!p||p.hp<=0){b.riders.delete(id);if(p)p.riding=false;}}
-      if(b.wait>0)b.wait--;else{const target=b.route[(b.index+1)%b.route.length],dx=target.x-b.x,dy=target.y-b.y,d=Math.hypot(dx,dy),step=.17;b.dx=dx/(d||1);b.dy=dy/(d||1);if(d<=step){b.x=target.x;b.y=target.y;b.index=(b.index+1)%b.route.length;if(target.stop){b.wait=80;b.stop=target.stop;}}else{b.x+=dx/d*step;b.y+=dy/d*step;}}
-      let seat=0;for(const id of b.riders){const p=this.players.get(id),side=(seat%2?1:-1)*.3375,longitudinal=(Math.floor(seat/2)-2)*.53125;p.x=b.x+b.dy*side+b.dx*longitudinal;p.y=b.y-b.dx*side+b.dy*longitudinal;p.face=[b.dx,b.dy];p.dir=null;seat++;}
+      if(b.driver&&this.players.get(b.driver)?.connected===false){b.riders.delete(b.driver);const dp=this.players.get(b.driver);if(dp)dp.riding=false;}
+      if(b.driver&&!b.riders.has(b.driver)){b.driver=null;b.speed=0;b.parked=1;b.ret=null;}
+      if(b.driver)this.stepDrivenBus(b);
+      else if(b.parked>0){ /* driver released: bus stays where it is; it drives itself back to the route (no teleport) once empty for 20 s, or after 2 min with riders aboard */
+        b.parked++;if(!b.ret&&((b.riders.size===0&&b.parked>=200)||b.parked>=1200))this.startBusReturn(b);
+        if(b.ret){const wp=b.ret[0],dx=wp.x-b.x,dy=wp.y-b.y,d=Math.hypot(dx,dy);if(d<=.17){b.x=wp.x;b.y=wp.y;b.ret.shift();if(!b.ret.length){this.finishBusReturn(b);}}else{b.dx=dx/d;b.dy=dy/d;b.x+=dx/d*.17;b.y+=dy/d*.17;}}
+      }
+      else if(b.wait>0)b.wait--;else{const target=b.route[(b.index+1)%b.route.length],dx=target.x-b.x,dy=target.y-b.y,d=Math.hypot(dx,dy),step=.17;b.dx=dx/(d||1);b.dy=dy/(d||1);if(d<=step){b.x=target.x;b.y=target.y;b.index=(b.index+1)%b.route.length;if(target.stop){b.wait=80;b.stop=target.stop;}}else{b.x+=dx/d*step;b.y+=dy/d*step;}}
+      let seat=0;for(const id of b.riders){const p=this.players.get(id);if(id===b.driver){p.x=b.x+b.dy*-.34+b.dx*1.45;p.y=b.y-b.dx*-.34+b.dy*1.45;p.face=[b.dx,b.dy];p.dir=null;continue;}const side=(seat%2?1:-1)*.3375,longitudinal=(Math.floor(seat/2)-2)*.53125;p.x=b.x+b.dy*side+b.dx*longitudinal;p.y=b.y-b.dx*side+b.dy*longitudinal;p.face=[b.dx,b.dy];p.dir=null;seat++;}
     }
 
     walkable(x, y) {
@@ -739,7 +783,7 @@
         t: 'state', tick: this.tickCount, floor: this.floor,
         you: { id: p.id, x: p.x, y: p.y, hp: p.hp, mh: p.maxHp, gold: p.gold, kills: p.kills, deaths: p.deaths, hu: p.hue, dead: p.hp <= 0, f: p.face, j: p.jumpUntil > this.tickCount ? 1 : 0, st: p.stance, place: p.place || null, hits: p.hits || 0, swings: p.swings || 0, shots: p.shots || 0, shotHits: p.shotHits || 0 },
         view: { x0, y0, tiles, lane: tiles.map((line,row)=>Array.from(line,(_,col)=>this.map.shuttleMask?.[(y0+row)*this.map.w+x0+col]?'1':'0').join('')) },
-        bus:this.bus?{x:this.bus.x,y:this.bus.y,dx:this.bus.dx,dy:this.bus.dy,wait:this.bus.wait,stop:this.bus.stop,riders:[...this.bus.riders],next:this.bus.route[(this.bus.index+1)%this.bus.route.length].stop||null}:null,
+        bus:this.bus?{x:this.bus.x,y:this.bus.y,dx:this.bus.dx,dy:this.bus.dy,wait:this.bus.wait,stop:this.bus.stop,riders:[...this.bus.riders],driver:this.bus.driver||null,speed:this.bus.speed||0,parked:this.bus.parked>0,next:this.bus.route[(this.bus.index+1)%this.bus.route.length].stop||null}:null,
         riding:!!p.riding,
         medkits:(this.medkits||[]).filter(k=>near(k)&&this.tickCount>=k.readyAt).map(k=>({id:k.id,x:k.x,y:k.y})),
         others, mobs, projs, labels, ev: sharedEvents !== undefined ? sharedEvents : this.drainEvents(),
