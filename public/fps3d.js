@@ -11,6 +11,7 @@
   let roadsV = null, tanks = null, poles = null, lampHeads = null, sunLight = null, skyDome = null, sunSprite = null;
   const SUN_DIR = { x: -0.55, y: 0.46, z: 0.42 }; /* low warm dusk sun; long shadows, occluded by buildings */
   let othersGroup = null, mobGroup = null, projGroup = null, beaconGroup = null, medkitGroup=null;
+  let busSm={x:null,y:null,a:0,tx:0,ty:0,tt:0,vx:0,vy:0};
   let medkitMat=null,medkitGeo=null,busGroup=null,projGeo=null,projMat=null;
   const tracerPool=[];
   let yaw = 0, pitch = 0, canvasEl = null, lean = 0;
@@ -99,7 +100,9 @@
     try {
       const THREE = await import('./three.module.js');
       window.__THREE = THREE;
-      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+      let savedQ = 'high'; try { savedQ = localStorage.getItem('nelli.quality') || 'high'; } catch (e) {}
+      if (savedQ === 'low') { dprCap = QUALITY.low.dpr; atlasScale = QUALITY.low.atlas; autoQ = false; autoLevel = 'low'; qualityName = 'low'; } /* saved Low: no MSAA, half-size facade atlases from the start */
+      renderer = new THREE.WebGLRenderer({ antialias: savedQ !== 'low', powerPreference: 'high-performance' });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dprCap)); /* cap DPR: full-res 3x screens are the main phone-lag source */
       if (THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
       if (THREE.ACESFilmicToneMapping !== undefined) { renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.22; }
@@ -218,9 +221,10 @@
 
       /* Original facade atlas. Four plaster/storefront treatments, baked
          balcony rails and rooftop surfaces. No external imagery or brands. */
-      function facadeAtlas(shop) {
-        const c=document.createElement('canvas');c.width=3072;c.height=1024;
-        const g=c.getContext('2d');let seed=shop?289:113;
+      function facadeAtlas(shop, sc) {
+        sc = sc || atlasScale;
+        const c=document.createElement('canvas');c.width=3072*sc;c.height=1024*sc;
+        const g=c.getContext('2d');g.scale(sc,sc);let seed=shop?289:113;
         const rnd=()=>((seed=(seed*16807)%2147483647)/2147483647);
         const shades=shop?['#d3c2a5','#bad0ca','#d2c6bc','#d3c9a7','#cbb49e','#aebfc6']:['#e6d8be','#c9d6cd','#d6c4b8','#dedccf','#e0c3ab','#c2cfcb'];
         for(let v=0;v<6;v++){
@@ -281,7 +285,7 @@
         return t;
       }
       function atlasMaterial(shop){
-        const mat=new THREE.MeshLambertMaterial({color:0xffffff,map:facadeAtlas(shop)});
+        const mat=new THREE.MeshLambertMaterial({color:0xffffff,map:facadeAtlas(shop)});atlasMats.push([mat,shop]);
         mat.onBeforeCompile=sh=>{sh.vertexShader=sh.vertexShader.replace('#include <uv_vertex>',`#include <uv_vertex>
           #ifdef USE_MAP
             float facadeVariant = floor(fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898,78.233))) * 43758.5453) * 6.0);
@@ -291,6 +295,7 @@
         mat.customProgramCacheKey=()=>shop?'original-shop-atlas-v2':'original-home-atlas-v2';
         return mat;
       }
+      atlasRebuild = (sc) => { if (sc === atlasScale) return; atlasScale = sc; for (const [m, shop] of atlasMats) { const old = m.map; m.map = facadeAtlas(shop, sc); m.needsUpdate = true; if (old) old.dispose(); } };
       walls = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, WALLH, TILE),atlasMaterial(false), MAXI);
       shops = new THREE.InstancedMesh(new THREE.BoxGeometry(TILE, WALLH, TILE),atlasMaterial(true), MAXI >> 2);
       /* asphalt v2: aggregate speckle, wheel-polish bands, painted edge lines.
@@ -456,24 +461,43 @@
   /* quality presets: dpr cap is the dominant phone-perf lever; fog/cull distance second.
      low/med/high are render-cost targets, not device promises. */
   const QUALITY = {
-    low:  { dpr: 1.0,  fogNear: 10, fogFar: 45, camFar: 70, shadow: 0 },
+    low:  { dpr: 0.8,  fogNear: 9,  fogFar: 38, camFar: 56, shadow: 0, atlas: 0.5 },
     med:  { dpr: 1.25, fogNear: 14, fogFar: 60, camFar: 90, shadow: 1024 },
     high: { dpr: 1.6,  fogNear: 16, fogFar: 75, camFar: 110, shadow: 2048 },
   };
   let dprCap = QUALITY.high.dpr, qualityName = 'high';
+  let atlasScale = 1; const atlasMats = []; let atlasRebuild = null;
   let fpsFrames = 0, fpsLast = 0, fpsValue = 0;
   /* third/first person: camera boom + own avatar, client-side only (server sim unchanged) */
   let camMode = 'fpp', selfAv = null, selfLx = 0, selfLy = 0, selfPhase = 0, selfLastMovedAt=0, dbgSt = null;
   let selfAnim = null;
   /* 10Hz server snapshots stepped the camera; smooth them: remember the last state
      change to extrapolate by velocity, and ease position/eye/boom every frame. */
+  let mvDx = 0, mvDy = 0, prX = null, prY = null;
   let smX = null, smY = null, eyeCur = null, boomCur = 0, lastRT = 0, dynDt = 0.016;
   let stX = null, stY = null, stT = 0, stVx = 0, stVy = 0, stIvl = 0.1;
-  function setQuality(q) {
+  /* adaptive quality: starts on the default; steps down when measured fps stays low. It stops adapting as soon as anyone sets a quality
+     other than the one it last chose (the settings selector), so an explicit choice always wins. Never steps back up (avoids flapping). */
+  let autoQ = true, autoLevel = 'high', autoLow = 0, autoSince = 0, autoDrops = 0;
+  const QORDER = ['high', 'med', 'low'];
+  function autoQuality(nowMs) {
+    if (!autoQ || !ready) return;
+    if (!autoSince) autoSince = nowMs;
+    if (nowMs - autoSince < 6000) return; /* ignore load and shader-compile stalls */
+    if (fpsValue > 0 && fpsValue < 28) autoLow++; else autoLow = 0;
+    if (autoLow >= 6) { /* ~3s sustained under 28fps */
+      const i = QORDER.indexOf(qualityName);
+      autoLow = 0;
+      if (i >= 0 && i < QORDER.length - 1) { autoLevel = QORDER[i + 1]; autoDrops++; setQuality(autoLevel, true); autoSince = nowMs; }
+    }
+  }
+  function setQuality(q, fromAuto) {
     const preset = QUALITY[q];
     if (!preset) return false;
+    if (!fromAuto && q !== autoLevel) autoQ = false;
     qualityName = q; dprCap = preset.dpr;
     if (ready) {
+      if (atlasRebuild) atlasRebuild(preset.atlas || 1);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dprCap));
       scene.fog.near = preset.fogNear; scene.fog.far = preset.fogFar;
       cam.far = preset.camFar; cam.updateProjectionMatrix();
@@ -669,7 +693,17 @@
       const byMat=new Map();for(const mesh of [...busGroup.children]){mesh.updateMatrix();let geo=mesh.geometry.index?mesh.geometry.toNonIndexed():mesh.geometry.clone();geo.applyMatrix4(mesh.matrix);if(!byMat.has(mesh.material))byMat.set(mesh.material,[]);byMat.get(mesh.material).push(geo);mesh.geometry.dispose();}
       busGroup.clear();for(const [mat,list]of byMat){const geo=new T.BufferGeometry();for(const name of ['position','normal','uv']){let size=0;for(const g of list)size+=g.attributes[name].array.length;const v=new Float32Array(size);let off=0;for(const g of list){v.set(g.attributes[name].array,off);off+=g.attributes[name].array.length;}geo.setAttribute(name,new T.BufferAttribute(v,name==='uv'?2:3));}for(const g of list)g.dispose();const mesh=new T.Mesh(geo,mat);mesh.castShadow=true;busGroup.add(mesh);}busGroup.userData.merged=true;
     }
-    busGroup.visible=!!b;if(!b)return;busGroup.position.set(b.x*TILE,.085,b.y*TILE);busGroup.rotation.y=Math.atan2(b.dx,b.dy);
+    busGroup.visible=!!b;if(!b)return;
+    { /* bus moves at a fixed speed on the server (10Hz steps): extrapolate along its heading and ease position and heading every frame */
+      const nowT=performance.now(),bd=busSm;
+      if(bd.x===null||Math.hypot(b.x-bd.tx,b.y-bd.ty)>3){bd.x=b.x;bd.y=b.y;bd.a=Math.atan2(b.dx,b.dy);bd.tx=b.x;bd.ty=b.y;bd.tt=nowT;bd.vx=bd.vy=0;}
+      if(b.x!==bd.tx||b.y!==bd.ty){const dtt=Math.max(0.05,(nowT-bd.tt)/1000);let nvx=(b.x-bd.tx)/dtt,nvy=(b.y-bd.ty)/dtt;const sp=Math.hypot(nvx,nvy),mx=2.4;if(sp>mx){nvx*=mx/sp;nvy*=mx/sp;}bd.vx=bd.vx*0.35+nvx*0.65;bd.vy=bd.vy*0.35+nvy*0.65;bd.tx=b.x;bd.ty=b.y;bd.tt=nowT;}
+      else if(nowT-bd.tt>180){bd.vx=bd.vy=0;}
+      const age=Math.min(0.16,(nowT-bd.tt)/1000),k=Math.min(1,dynDt*14);
+      bd.x+=(b.x+bd.vx*age-bd.x)*k;bd.y+=(b.y+bd.vy*age-bd.y)*k;
+      const ta=Math.atan2(b.dx,b.dy);let da=Math.atan2(Math.sin(ta-bd.a),Math.cos(ta-bd.a));bd.a+=da*Math.min(1,dynDt*8);
+      busGroup.position.set(bd.x*TILE,.085,bd.y*TILE);busGroup.rotation.y=bd.a;
+    }
   }
 
   function updateHealthProps(st) {
@@ -714,9 +748,17 @@
       const g = av.obj;
       /* snapshots step at 10Hz; ease each avatar toward the latest point instead */
       {
-        const k = Math.min(1, dynDt * 12);
-        const oldX=av.sx,oldY=av.sy;
-        av.sx += (o.x * TILE - av.sx) * k; av.sy += (o.y * TILE - av.sy) * k;
+        const k = Math.min(1, dynDt * 14);
+        const oldX=av.sx,oldY=av.sy,nowT=performance.now();
+        if (av.tx === undefined) { av.tx = o.x; av.ty = o.y; av.tt = nowT; av.vx = av.vy = 0; }
+        if (o.x !== av.tx || o.y !== av.ty) { /* new snapshot point: learn velocity so avatars glide through the 100ms gap instead of stepping */
+          const dtt = Math.max(0.05, (nowT - av.tt) / 1000);
+          if (Math.hypot(o.x - av.tx, o.y - av.ty) > 3) { av.vx = av.vy = 0; av.sx = o.x * TILE; av.sy = o.y * TILE; }
+          else { let nvx = (o.x - av.tx) / dtt, nvy = (o.y - av.ty) / dtt; const sp = Math.hypot(nvx, nvy), mx = 4 / TILE; if (sp > mx) { nvx *= mx / sp; nvy *= mx / sp; } av.vx = av.vx * 0.35 + nvx * 0.65; av.vy = av.vy * 0.35 + nvy * 0.65; }
+          av.tx = o.x; av.ty = o.y; av.tt = nowT;
+        } else if (nowT - av.tt > 180) { av.vx = av.vy = 0; }
+        const exAge = Math.min(0.16, (nowT - av.tt) / 1000);
+        av.sx += ((o.x + av.vx * exAge) * TILE - av.sx) * k; av.sy += ((o.y + av.vy * exAge) * TILE - av.sy) * k;
         av.phase+=Math.min(.5,Math.hypot(av.sx-oldX,av.sy-oldY)/TILE)*9;
         av.mv += (((performance.now()-(av.lastMovedAt||0)<160) ? 1 : 0) - av.mv) * Math.min(1, dynDt * 10);
         if (av.anim) { av.anim.uPhase.value = av.phase; av.anim.uMove.value = o.riding?0:av.mv; }
@@ -774,6 +816,16 @@
   }
 
 
+  let camPX = 0, camPY = 0;
+  function predWalk(st, x, y) { /* same 4-corner rule as the server's canMove (radius .19); unknown/out-of-view tiles block prediction */
+    const r = 0.19;
+    for (const [dx, dy] of [[-r, -r], [r, -r], [-r, r], [r, r]]) {
+      const c = tileCodeAt(st, (x + dx) * TILE, (y + dy) * TILE);
+      if (c <= 0) return false;
+    }
+    return true;
+  }
+  function setMoveInput(dx, dy) { mvDx = Number.isFinite(dx) ? dx : 0; mvDy = Number.isFinite(dy) ? dy : 0; }
   function tileCodeAt(st, wx, wz) {
     const v = st.view;
     if (!v || !v.tiles) return -1;
@@ -816,7 +868,7 @@
             vec3 original = transformed;
             if (transformed.y < 0.87) {
               float hip = -1.25 * c + stride * (0.55 - c * 0.30);
-              float knee = 2.25 * c + max(0.0, -stride) * (0.65 - c * 0.40);
+              float ph2 = uPhase + side; float knee = 2.25 * c + uMove * (0.62 * max(0.0, -cos(ph2 - 0.35)) + 0.16 * max(0.0, sin(ph2)) + 0.07) * (1.0 - c * 0.6);
               if(transformed.y < 0.105) {
                 float ankle=-(hip+knee);vec2 v=transformed.yz-vec2(0.105,0.04);
                 transformed.yz=mat2(cos(ankle),sin(ankle),-sin(ankle),cos(ankle))*v+vec2(0.105,0.04);
@@ -835,11 +887,28 @@
               vec2 v = transformed.yz - vec2(1.35,0.03);
               transformed.yz = mat2(cos(swing),sin(swing),-sin(swing),cos(swing)) * v + vec2(1.35,0.03);
             }
+            { /* arm elbow flex: relaxed bend that deepens as the arm swings forward */
+              float fwd = max(0.0, stride);
+              float eb = uMove * (0.10 + 0.32 * fwd) * smoothstep(1.16, 1.00, transformed.y);
+              if (armW > 0.0 && transformed.y < 1.16) {
+                vec2 ev = transformed.yz - vec2(1.07, 0.03 + (-stride * 0.55) * 0.0);
+                transformed.yz = mat2(cos(eb),sin(eb),-sin(eb),cos(eb)) * ev + vec2(1.07, 0.03);
+              }
+            }
             transformed = mix(legPose,transformed,armW);
+            { /* pelvis bob (tallest when legs pass, lowest at heel strike), forward lean, shoulder twist against the hips */
+              float up = smoothstep(0.15, 0.95, original.y) * (1.0 - c);
+              transformed.y += uMove * (0.030 * cos(2.0 * uPhase) - 0.015) * up;
+              float lean = uMove * 0.09 * (1.0 - c) * 1.0 * smoothstep(0.80, 0.95, original.y);
+              vec2 lv = transformed.yz - vec2(0.87, 0.03);
+              transformed.yz = mat2(cos(lean),sin(lean),-sin(lean),cos(lean)) * lv + vec2(0.87, 0.03);
+              float tw = uMove * 0.13 * sin(uPhase) * 1.0 * smoothstep(0.87, 1.30, original.y) * (1.0 - c);
+              transformed.xz = mat2(cos(tw),sin(tw),-sin(tw),cos(tw)) * transformed.xz;
+            }
             transformed.y -= c * (0.43 * (1.0 - cos(1.25)) + 0.335 * (1.0 - cos(1.0)));
           }`);
       };
-      mm.material.customProgramCacheKey = () => 'nexora-hinge-pose-v5-' + mm.name;
+      mm.material.customProgramCacheKey = () => 'nexora-hinge-pose-v6-' + mm.name;
       mm.material.needsUpdate = true;
     });
   }
@@ -850,6 +919,16 @@
     root.traverse(mm=>{if(!mm.isMesh||!mm.material)return;mm.material=mm.material.clone();
       mm.material.onBeforeCompile=sh=>{Object.assign(sh.uniforms,anim);sh.vertexShader='uniform float uPhase;uniform float uMove;\n'+sh.vertexShader.replace('#include <begin_vertex>',`#include <begin_vertex>
       float side=position.x>=0.0?0.0:3.14159265;
+      float sxp=position.x>=0.0?1.0:-1.0;
+      float armWt0=smoothstep(.11,.19,abs(position.x))*smoothstep(1.20,1.48,position.y);
+      float headWt=(1.0-smoothstep(.13,.19,abs(position.x)))*smoothstep(1.52,1.60,position.y);
+      { /* prone rest pose: head lifted, forearms folded in under the chin instead of both arms laid straight past the head */
+        float ha=-0.5*headWt;vec2 hv=transformed.yz-vec2(1.5,0.03);transformed.yz=mat2(cos(ha),sin(ha),-sin(ha),cos(ha))*hv+vec2(1.5,0.03);
+        float sa=-sxp*0.42*armWt0*smoothstep(1.38,1.50,position.y);vec2 sh0=vec2(sxp*0.18,1.40);
+        vec2 sv=transformed.xy-sh0;transformed.xy=mat2(cos(sa),sin(sa),-sin(sa),cos(sa))*sv+sh0; /* upper arm out to the side */
+        vec2 ep=vec2(sxp*0.22,1.62)-sh0;ep=mat2(cos(-sxp*0.42),sin(-sxp*0.42),-sin(-sxp*0.42),cos(-sxp*0.42))*ep+sh0;
+        float eb=sxp*0.55*smoothstep(1.55,1.75,position.y)*armWt0;vec2 ev=transformed.xy-ep;transformed.xy=mat2(cos(eb),sin(eb),-sin(eb),cos(eb))*ev+ep;
+      }
       float crawl=sin(uPhase*.65+side)*uMove;
       float leg=1.0-smoothstep(.72,.91,position.y);
       float foreleg=1.0-smoothstep(.40,.65,position.y);
@@ -857,7 +936,7 @@
       transformed.x+=crawl*(.085*leg+.035*arm);
       transformed.y+=crawl*(.08*leg+.085*arm);
       transformed.z-=max(0.0,crawl)*.075*foreleg;
-      `);};mm.material.customProgramCacheKey=()=> 'nexora-crawl-local-v1';mm.material.needsUpdate=true;
+      `);};mm.material.customProgramCacheKey=()=> 'nexora-crawl-local-v2';mm.material.needsUpdate=true;
     });
   }
 
@@ -959,6 +1038,26 @@
       const k = Math.min(1, dt * 14);
       smX += (tx - smX) * k; smY += (ty - smY) * k;
     }
+    /* own-player prediction (render only, server stays authoritative): input moves the view immediately at the same speed and
+       collision rule as the server, instead of waiting a round trip plus a 10Hz tick. The lead is capped, and it eases back to the
+       server-smoothed position when input stops, on a teleport, on death or while riding. */
+    camPX = smX; camPY = smY;
+    {
+      const sx = smX / TILE, sy = smY / TILE;
+      const held = (mvDx || mvDy) && !st.riding && !me.dead;
+      if (prX === null || !held && Math.hypot(prX - sx, prY - sy) < 0.01 || Math.hypot(prX - sx, prY - sy) > 2.5 || st.riding || me.dead) { prX = sx; prY = sy; }
+      if (held) {
+        const len = Math.max(1, Math.hypot(mvDx, mvDy)), spd = ({ stand: 4, crouch: 2.3, prone: 1.2 }[me.st] || 4) / TILE;
+        const nx = prX + mvDx / len * spd * dt, ny = prY + mvDy / len * spd * dt;
+        if (predWalk(st, nx, prY)) prX = nx;
+        if (predWalk(st, prX, ny)) prY = ny;
+        const ex = prX - sx, ey = prY - sy, e = Math.hypot(ex, ey);
+        if (e > 1.2) { prX = sx + ex / e * 1.2; prY = sy + ey / e * 1.2; }
+      } else {
+        const k = Math.min(1, dt * 9); prX += (sx - prX) * k; prY += (sy - prY) * k;
+      }
+      camPX = prX * TILE; camPY = prY * TILE;
+    }
     if (me.j && !selfJt) selfJt = performance.now();
     if (!me.j) selfJt = 0;
     const sje = selfJt ? Math.min((performance.now() - selfJt) / 600, 1) : 0;
@@ -980,7 +1079,7 @@
     if (eyeCur === null) eyeCur = eyeTgt;
     eyeCur += (eyeTgt - eyeCur) * Math.min(1, dt * 10); // stance changes ease instead of snapping
     const eyeNow = eyeCur;
-    cam.position.set(smX, eyeNow + sjoff + (st.riding?.9:0), smY);
+    cam.position.set(camPX, eyeNow + sjoff + (st.riding?.9:0), camPY);
     const at = adsOn ? 1 : 0;
     if (adsT !== at) {
       adsT += (at - adsT) * 0.35;
@@ -1020,14 +1119,14 @@
     }
     if (camMode === 'tpp' && selfAv) {
       // own avatar stands at the player, faces movement/aim yaw, walks with a real cycle
-      const smoved = Math.min(.5,Math.hypot(smX/TILE - selfLx, smY/TILE - selfLy));
+      const smoved = Math.min(.5,Math.hypot(camPX/TILE - selfLx, camPY/TILE - selfLy));
       if(smoved>.002)selfLastMovedAt=performance.now();
-      selfPhase += smoved * 9; selfLx = smX/TILE; selfLy = smY/TILE;
+      selfPhase += smoved * 9; selfLx = camPX/TILE; selfLy = camPY/TILE;
       if (selfAnim) {
         selfAnim.uPhase.value = selfPhase;
         selfAnim.uMove.value += ((!st.riding&&performance.now()-selfLastMovedAt<160 ? 1 : 0) - selfAnim.uMove.value) * Math.min(1, dt * 10);
       }
-      selfAv.position.set(smX, 0.03 + sjoff + (smoved > 0.002 ? Math.abs(Math.sin(selfPhase)) * 0.05 : 0), smY);
+      selfAv.position.set(camPX, 0.03 + sjoff + (smoved > 0.002 ? Math.abs(Math.sin(selfPhase)) * 0.05 : 0), smY);
       selfAv.rotation.y = Math.atan2(Math.sin(yaw), -Math.cos(yaw)); // same facing convention as other avatars: map forward (sin yaw, -cos yaw)
       selfAv.scale.set(1, 1, 1); selfAv.rotation.x = 0;
       showStance(selfAv, st.riding?'crouch':me.st, false);
@@ -1038,13 +1137,13 @@
       const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
       let boom = 3.2 - 1.8 * adsT;
       for (let t = 0.4; t <= boom; t += 0.4) {
-        if (tileCodeAt(st, smX - dir.x * t, smY - dir.z * t) === 0) { boom = Math.max(0.35, t - 0.45); break; }
+        if (tileCodeAt(st, camPX - dir.x * t, camPY - dir.z * t) === 0) { boom = Math.max(0.35, t - 0.45); break; }
       }
       boomCur += (boom - boomCur) * Math.min(1, dt * 7); // camera glides out/in on switch instead of snapping
       cam.position.set(
-        smX - dir.x * boomCur,
+        camPX - dir.x * boomCur,
         Math.max(0.3, eyeNow + sjoff * 0.45 - dir.y * boomCur + 0.18 + (st.riding?.9:0)), // TPP camera follows the hop partially, so the avatar reads against the scene
-        smY - dir.z * boomCur);
+        camPY - dir.z * boomCur);
       if (gun) gun.visible = false;
     } else if (selfAv) {
       selfAv.visible = false;
@@ -1063,7 +1162,7 @@
     renderer.render(scene, cam);
     fpsFrames++;
     const fpsNow = performance.now();
-    if (fpsNow - fpsLast >= 500) { fpsValue = Math.round(fpsFrames * 1000 / (fpsNow - fpsLast)); fpsFrames = 0; fpsLast = fpsNow; }
+    if (fpsNow - fpsLast >= 500) { fpsValue = Math.round(fpsFrames * 1000 / (fpsNow - fpsLast)); fpsFrames = 0; fpsLast = fpsNow; autoQuality(fpsNow); }
   }
 
   /* look-around: drag to turn. Returns aim as a dominant-axis [dx,dy] map vector. */
@@ -1085,7 +1184,7 @@
     setFreeLook,
     get freeLooking(){return freeLooking;},
     get viewFace(){return [Math.sin(yaw+freeYaw),-Math.cos(yaw+freeYaw)];},
-    init, render, lookDelta, aimVec, setYawFromFace, setAds, setQuality, setCamMode,
+    init, render, lookDelta, aimVec, setYawFromFace, setAds, setQuality, setCamMode, setMoveInput,
     get ready() { return ready; },
     get yaw() { return yaw; },
     get pitch() { return pitch; },
@@ -1094,6 +1193,7 @@
     get shotBlocked() { return shotBlocked; },
     get shotBlockDist() { return shotBlockDist; },
     get quality() { return qualityName; },
+    get autoQuality() { return { on: autoQ, drops: autoDrops }; },
     get camMode() { return camMode; },
     set onAds(fn) { adsCb = fn; },
     setLean,
