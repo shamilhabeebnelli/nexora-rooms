@@ -436,6 +436,11 @@ function sendShoot() {
     if (S.mode === 'solo' || S.mode === 'host') S.delve.shoot(S.myId, pitch);
   });
 }
+let drvIn={s:0,th:0};
+window.NexoraDriveAction=()=>{if(!S.joined)return;drvIn={s:0,th:0};if(window.NelliFps&&NelliFps.setDriveInput)NelliFps.setDriveInput(0,0);if(wsSend({t:'drive'}))return;if(S.delve)S.delve.driveBus(S.myId);};
+window.NexoraDriveInput=(s,th)=>{if(drvIn.s===s&&drvIn.th===th)return;drvIn={s,th};if(window.NelliFps&&NelliFps.setDriveInput)NelliFps.setDriveInput(s,th);if(wsSend({t:'drive_in',s,th}))return;if(S.delve)S.delve.driveInput(S.myId,s,th);};
+(()=>{const K={};const upd=()=>{const bus=S.state?.bus;if(!bus||bus.driver!==S.state?.you?.id)return;NexoraDriveInput((K.d||K.arrowright?1:0)-(K.a||K.arrowleft?1:0),(K.w||K.arrowup?1:0)-(K.s||K.arrowdown?1:0));};
+addEventListener('keydown',e=>{const k=e.key.toLowerCase();if('wasd'.includes(k)&&k.length===1||k.startsWith('arrow')){K[k]=1;upd();}},true);addEventListener('keyup',e=>{const k=e.key.toLowerCase();K[k]=0;upd();},true);window.__drvKeys=K;})();
 window.NexoraBusAction=()=>{if(!S.joined)return;if(wsSend({t:'bus'}))return;if(S.delve)S.delve.boardBus(S.myId);};
 let curStance = 'stand';
 function sendStance(st) {
