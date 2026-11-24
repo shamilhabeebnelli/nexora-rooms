@@ -11,6 +11,9 @@
   let roadsV = null, tanks = null, poles = null, lampHeads = null, sunLight = null, skyDome = null, sunSprite = null;
   const SUN_DIR = { x: -0.55, y: 0.46, z: 0.42 }; /* low warm dusk sun; long shadows, occluded by buildings */
   let othersGroup = null, mobGroup = null, projGroup = null, beaconGroup = null, medkitGroup=null;
+  let drvP={on:false,x:0,y:0,a:0,sp:0,t:0},drvIn={s:0,th:0};
+  function drawnBus(){return busGroup?{x:busGroup.position.x/TILE,y:busGroup.position.z/TILE,pred:drvP.on}:null;}
+  function setDriveInput(s,th){drvIn={s:Number(s)||0,th:Number(th)||0};}
   let busSm={x:null,y:null,a:0,tx:0,ty:0,tt:0,vx:0,vy:0};
   let medkitMat=null,medkitGeo=null,busGroup=null,projGeo=null,projMat=null;
   const tracerPool=[];
@@ -697,11 +700,31 @@
     { /* bus moves at a fixed speed on the server (10Hz steps): extrapolate along its heading and ease position and heading every frame */
       const nowT=performance.now(),bd=busSm;
       if(bd.x===null||Math.hypot(b.x-bd.tx,b.y-bd.ty)>3){bd.x=b.x;bd.y=b.y;bd.a=Math.atan2(b.dx,b.dy);bd.tx=b.x;bd.ty=b.y;bd.tt=nowT;bd.vx=bd.vy=0;}
-      if(b.x!==bd.tx||b.y!==bd.ty){const dtt=Math.max(0.05,(nowT-bd.tt)/1000);let nvx=(b.x-bd.tx)/dtt,nvy=(b.y-bd.ty)/dtt;const sp=Math.hypot(nvx,nvy),mx=2.4;if(sp>mx){nvx*=mx/sp;nvy*=mx/sp;}bd.vx=bd.vx*0.35+nvx*0.65;bd.vy=bd.vy*0.35+nvy*0.65;bd.tx=b.x;bd.ty=b.y;bd.tt=nowT;}
+      if(b.x!==bd.tx||b.y!==bd.ty){const dtt=Math.max(0.05,(nowT-bd.tt)/1000);let nvx=(b.x-bd.tx)/dtt,nvy=(b.y-bd.ty)/dtt;const sp=Math.hypot(nvx,nvy),mx=4.4;if(sp>mx){nvx*=mx/sp;nvy*=mx/sp;}bd.vx=bd.vx*0.35+nvx*0.65;bd.vy=bd.vy*0.35+nvy*0.65;bd.tx=b.x;bd.ty=b.y;bd.tt=nowT;}
       else if(nowT-bd.tt>180){bd.vx=bd.vy=0;}
       const age=Math.min(0.16,(nowT-bd.tt)/1000),k=Math.min(1,dynDt*14);
       bd.x+=(b.x+bd.vx*age-bd.x)*k;bd.y+=(b.y+bd.vy*age-bd.y)*k;
       const ta=Math.atan2(b.dx,b.dy);let da=Math.atan2(Math.sin(ta-bd.a),Math.cos(ta-bd.a));bd.a+=da*Math.min(1,dynDt*8);
+      { /* driver-side prediction (render only; server stays authoritative): same physics as server stepDrivenBus, input applies at once, then eased toward the server state */
+        const dr=st.riding&&b.driver&&b.driver===st.you.id;
+        if(!dr){drvP.on=false;}
+        else{
+          if(!drvP.on||Math.hypot(drvP.x-b.x,drvP.y-b.y)>4){drvP.on=true;drvP.x=b.x;drvP.y=b.y;drvP.a=Math.atan2(b.dx,b.dy);drvP.sp=b.speed||0;drvP.t=nowT;}
+          let rem=Math.min(0.25,Math.max(0,(nowT-drvP.t)/1000));drvP.t=nowT;
+          const hullOk=(x,y,ax,ay)=>{const bx=-ay,by=ax;for(const l of [-2,-1,0,1,2])for(const w of [-.55,.55])if(tileCodeAt(st,(x+ax*l+bx*w)*TILE,(y+ay*l+by*w)*TILE)<=0)return false;return true;};
+          while(rem>1e-4){const dt=Math.min(.05,rem);rem-=dt;let sp=drvP.sp;const th=drvIn.th,sr=drvIn.s;
+            if(th>0)sp+=(sp<0?4.5:2.2)*th*dt;else if(th<0)sp+=(sp>0?-4.5:-1.5)*(-th)*dt;else{const d=1.2*dt;sp=Math.abs(sp)<=d?0:sp-Math.sign(sp)*d;}
+            sp=Math.max(-1.2,Math.min(3.6,sp));let ang=drvP.a-sr*1.1*Math.max(-1,Math.min(1,sp/1.5))*dt;const dx=Math.sin(ang),dy=Math.cos(ang);
+            const nx=drvP.x+dx*sp*dt,ny=drvP.y+dy*sp*dt;
+            if(hullOk(nx,ny,dx,dy)){drvP.x=nx;drvP.y=ny;drvP.a=ang;drvP.sp=sp;}else if(hullOk(drvP.x,drvP.y,dx,dy)){drvP.a=ang;drvP.sp=0;}else drvP.sp=0;}
+          /* ease toward server state advanced by a nominal latency; hard-resync past 4 tiles (above) */
+          const sa=Math.atan2(b.dx,b.dy),sp0=b.speed||0,kk=Math.min(1,dynDt*1.2);
+          drvP.x+=(b.x+Math.sin(sa)*sp0*.2-drvP.x)*kk;drvP.y+=(b.y+Math.cos(sa)*sp0*.2-drvP.y)*kk;
+          drvP.a+=Math.atan2(Math.sin(sa-drvP.a),Math.cos(sa-drvP.a))*Math.min(1,dynDt*1.5);
+          drvP.sp+=(sp0-drvP.sp)*Math.min(1,dynDt*1.2);
+          bd.x=drvP.x;bd.y=drvP.y;bd.a=drvP.a;
+        }
+      }
       busGroup.position.set(bd.x*TILE,.085,bd.y*TILE);busGroup.rotation.y=bd.a;
     }
   }
@@ -1199,7 +1222,7 @@
     setFreeLook,
     get freeLooking(){return freeLooking;},
     get viewFace(){return [Math.sin(yaw+freeYaw),-Math.cos(yaw+freeYaw)];},
-    init, render, lookDelta, aimVec, setYawFromFace, setAds, setQuality, setCamMode, setMoveInput,
+    init, render, lookDelta, aimVec, setYawFromFace, setAds, setQuality, setCamMode, setMoveInput, setDriveInput, drawnBus,
     get ready() { return ready; },
     get yaw() { return yaw; },
     get pitch() { return pitch; },
