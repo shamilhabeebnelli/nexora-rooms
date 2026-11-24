@@ -768,6 +768,12 @@
       const je = av.jt ? Math.min((performance.now() - av.jt) / 600, 1) : 0;
       const joff = av.jt ? Math.sin(Math.PI * je) * 0.7 : 0;
       g.position.set(av.sx, 0, av.sy);
+      if (o.riding && st.bus && busSm.x !== null) { /* rigid seat offset on the drawn bus, same smoothing as the bus model */
+        const ex = o.x - st.bus.x, ey = o.y - st.bus.y, sa = Math.atan2(st.bus.dx, st.bus.dy);
+        const l = ex * Math.sin(sa) + ey * Math.cos(sa), r = ex * Math.cos(sa) - ey * Math.sin(sa);
+        av.sx = (busSm.x + l * Math.sin(busSm.a) + r * Math.cos(busSm.a)) * TILE; av.sy = (busSm.y + l * Math.cos(busSm.a) - r * Math.sin(busSm.a)) * TILE;
+        g.position.set(av.sx, g.position.y, av.sy);
+      }
       const fx = (o.f && o.f[0]) || 0, fy = (o.f && o.f[1]) || 0;
       if (fx || fy) g.rotation.y = Math.atan2(fx, fy);
       g.scale.set(1, 1, 1);
@@ -1012,7 +1018,7 @@
     rebuild(st);
     const me = st.you;
     // Keep the passenger's chosen look angle relative to the turning vehicle.
-    if(st.riding&&st.bus){const a=Math.atan2(st.bus.dx,-st.bus.dy);yaw=lastRideYaw===null?a:yaw+Math.atan2(Math.sin(a-lastRideYaw),Math.cos(a-lastRideYaw));lastRideYaw=a;}else lastRideYaw=null;
+    if(st.riding&&st.bus){const a=busSm.x!==null?Math.PI-busSm.a:Math.atan2(st.bus.dx,-st.bus.dy);yaw=lastRideYaw===null?a:yaw+Math.atan2(Math.sin(a-lastRideYaw),Math.cos(a-lastRideYaw));lastRideYaw=a;}else lastRideYaw=null;
     /* velocity extrapolation from the last snapshot change. Adaptive cadence:
        the measured snapshot interval (EMA) sets the extrapolation window and
        the silence timeout, and incoming velocity blends instead of replacing -
@@ -1057,6 +1063,15 @@
         const k = Math.min(1, dt * 9); prX += (sx - prX) * k; prY += (sy - prY) * k;
       }
       camPX = prX * TILE; camPY = prY * TILE;
+    }
+    /* passenger: the avatar is a rigid seat offset on the bus on the server. Place the camera from the bus as it is drawn (same smoothing),
+       not from a second, differently filtered copy of the rider position, so the view cannot slide in and out of the bus. */
+    if (st.riding && st.bus && busSm.x !== null && !me.dead) {
+      const ex = me.x - st.bus.x, ey = me.y - st.bus.y, sa = Math.atan2(st.bus.dx, st.bus.dy);
+      const l = ex * Math.sin(sa) + ey * Math.cos(sa), r = ex * Math.cos(sa) - ey * Math.sin(sa);
+      camPX = (busSm.x + l * Math.sin(busSm.a) + r * Math.cos(busSm.a)) * TILE;
+      camPY = (busSm.y + l * Math.cos(busSm.a) - r * Math.sin(busSm.a)) * TILE;
+      smX = camPX; smY = camPY;
     }
     if (me.j && !selfJt) selfJt = performance.now();
     if (!me.j) selfJt = 0;
