@@ -420,6 +420,7 @@ function wsSend(obj) {
 function sendDir(dx, dy) {
   if(S.state?.riding){dx=0;dy=0;}
   curMoveDir = [dx, dy];
+  if (window.NelliFps && NelliFps.setMoveInput) NelliFps.setMoveInput(dx, dy); /* 3D view predicts own movement; server stays authoritative */
   if (wsSend({ t: 'dir', dx, dy })) return;
   if (S.mode === 'solo' || S.mode === 'host') S.delve.setDir(S.myId, dx, dy);
 }
